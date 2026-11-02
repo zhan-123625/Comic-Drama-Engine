@@ -1,0 +1,10 @@
+node_modules
+data
+logs
+.git
+*.log
+.env
+.env.*
+web/dist
+.github
+.vscode
