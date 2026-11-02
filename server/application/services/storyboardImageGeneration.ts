@@ -9,7 +9,11 @@ import { buildStoryboardImageGenerationPrompt, shotHasDrawableImageContent } fro
 import { toErrorMeta } from "../../logger.js";
 import { store } from "../../store.js";
 
-export async function generateStoryboardImage(projectId: string, shotId: string, opts?: { promptOverride?: string }) {
+export async function generateStoryboardImage(
+  projectId: string,
+  shotId: string,
+  opts?: { promptOverride?: string; referenceImageUrls?: string[] },
+) {
   const p = await store.get(projectId);
   if (!p) return { ok: false as const, status: 404 as const, error: "project not found" };
   const shot = p.storyboards.find((s) => s.id === shotId);
@@ -34,6 +38,7 @@ export async function generateStoryboardImage(projectId: string, shotId: string,
   try {
     const img = await runImageAgentForStoryboardShot(p, shot, p.storyboardImageSize, {
       imagePromptOverride: opts?.promptOverride,
+      referenceImageUrlsOverride: opts?.referenceImageUrls,
       imageCfg,
     });
     const { buf, mime, remoteUrl } = await bytesFromGenerateImageResult(img);

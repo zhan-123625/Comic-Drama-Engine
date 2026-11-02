@@ -298,13 +298,21 @@ async function generateSelectedShotImages() {
   }
 }
 
-async function generateShotImage(s: StoryboardShot) {
+async function generateShotImage(s: StoryboardShot, customReferenceUrls?: string[]) {
   const p = projectsStore.selected;
   if (!p) return;
   if (pipeline.generatingShotIds.includes(s.id)) return;
   pipeline.generatingShotIds = [...pipeline.generatingShotIds, s.id];
   try {
-    const r = await fetch(`/api/projects/${p.id}/storyboards/${s.id}/generate-image`, { method: "POST" });
+    const payload: { referenceImageUrls?: string[] } = {};
+    if (customReferenceUrls?.length) {
+      payload.referenceImageUrls = customReferenceUrls;
+    }
+    const r = await fetch(`/api/projects/${p.id}/storyboards/${s.id}/generate-image`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
     const body = (await r.json().catch(() => ({}))) as {
       error?: string;
       project?: Parameters<typeof projectsStore.mergeProject>[0];
@@ -757,7 +765,7 @@ async function saveStoryboardImagePromptFromModal() {
 async function saveAndGenerateStoryboardImageFromModal() {
   await saveStoryboardImagePromptFromModal();
   const shot = pipeline.storyboardImageModalShot;
-  if (shot) await generateShotImage(shot);
+  if (shot) await generateShotImage(shot, pipeline.storyboardImagePreviewApiUrls);
 }
 
 async function runStoryboardImageOnceFromModal() {
@@ -766,7 +774,7 @@ async function runStoryboardImageOnceFromModal() {
   if (!p || !shot) return;
   shot.imagePrompt = pipeline.storyboardImageDraftPrompt.trim() || undefined;
   await projectsStore.savePatch({ storyboards: p.storyboards });
-  await generateShotImage(shot);
+  await generateShotImage(shot, pipeline.storyboardImagePreviewApiUrls);
   closeStoryboardImagePromptModal();
 }
 </script>

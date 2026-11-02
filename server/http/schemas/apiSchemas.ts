@@ -223,6 +223,7 @@ export const assetGenerateBatchBody = z.object({
 
 export const storyboardGenerateImageBody = z.object({
   promptOverride: z.string().max(12_000).optional(),
+  referenceImageUrls: z.array(z.string().max(4000)).max(12).optional(),
 });
 
 export const generateImagesBody = z.object({

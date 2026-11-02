@@ -276,9 +276,9 @@ export function orderedAssetsForStoryboardVisual(project: Project, shot: Storybo
     else rest.push(a);
   }
   return [
+    ...byAssetIndex(chars),
     ...byAssetIndex(sceneForThisRun),
     ...byAssetIndex(otherScenes),
-    ...byAssetIndex(chars),
     ...byAssetIndex(costumes),
     ...byAssetIndex(rest),
   ];

@@ -266,6 +266,7 @@ export function registerApiRoutes(app: express.Application): void {
     if (!body) return;
     const result = await runStoryboardImageGeneration(req.params.id, req.params.shotId, {
       promptOverride: body.promptOverride,
+      referenceImageUrls: body.referenceImageUrls,
     }).catch((e) => ({
       ok: false as const,
       status: 502 as const,

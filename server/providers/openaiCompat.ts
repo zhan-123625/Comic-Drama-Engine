@@ -5,6 +5,7 @@ import { logger } from "../logger.js";
 import { redactRequestHeaders, sanitizeModelRequestBody } from "../modelRequestSnapshot.js";
 import type { ModelApiCallSnapshot } from "../types.js";
 import { sleep } from "../utils/sleep.js";
+import { compositeReferenceImages } from "../utils/compositeImages.js";
 
 function parseTimeoutMs(envName: string, fallback: number): number {
   const raw = process.env[envName];
@@ -227,6 +228,9 @@ function mergeReferenceImagesIntoBody(body: Record<string, unknown>, referenceDa
   const explicitField = process.env.MY_APP_IMAGE_REFERENCE_FIELD?.trim();
   const refField = explicitField || "image";
   body[refField] = referenceDataUrls.length === 1 ? referenceDataUrls[0]! : referenceDataUrls;
+  if (!explicitField && referenceDataUrls.length > 1) {
+    body["images"] = referenceDataUrls;
+  }
 }
 
 function buildImageGenerationBody(
@@ -287,24 +291,52 @@ async function generateImageDashScope(opts: {
   model: string;
   prompt: string;
   size: string;
+  referenceDataUrls?: string[];
 }): Promise<{ url?: string; b64_json?: string; modelApiCall?: ModelApiCallSnapshot }> {
   const model = opts.model === "qwen-image" ? "wanx2.1-t2i-turbo" : opts.model;
   const dsSize = toDashScopeImageSize(opts.size);
   const createEndpoint = "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis";
-  const reqHeaders = {
+  const reqHeaders: Record<string, string> = {
     "Content-Type": "application/json",
     Authorization: `Bearer ${opts.apiKey}`,
     "X-DashScope-Async": "enable",
   };
+
+  let resolvedPrompt = opts.prompt;
+  let refImg: string | undefined;
+
+  if (opts.referenceDataUrls?.length) {
+    refImg = await compositeReferenceImages(opts.referenceDataUrls);
+    if (refImg) {
+      logger.info("attached reference image(s) to DashScope image synthesis", {
+        model,
+        inputImageCount: opts.referenceDataUrls.length,
+        isComposited: opts.referenceDataUrls.length > 1,
+      });
+      resolvedPrompt +=
+        "\n\n【多图视觉参考说明】：上方已提供本分镜关联的关键角色设定与场景环境参考图。请严格以参考图中的角色相貌、五官发型、体型服饰与场景环境为视觉依据，确保画面中的角色外貌与设定图高度一致。";
+    }
+  }
+
+  const input: Record<string, unknown> = {
+    prompt: resolvedPrompt,
+  };
+  if (refImg) {
+    input.ref_img = refImg;
+  }
+
+  const parameters: Record<string, unknown> = {
+    size: dsSize,
+    n: 1,
+  };
+  if (refImg) {
+    parameters.ref_strength = 0.65;
+  }
+
   const bodyUsed = {
     model,
-    input: {
-      prompt: opts.prompt,
-    },
-    parameters: {
-      size: dsSize,
-      n: 1,
-    },
+    input,
+    parameters,
   };
 
   logger.info("submitting DashScope image synthesis task", { model, size: dsSize });
@@ -402,6 +434,7 @@ export async function generateImage(opts: {
       model,
       prompt: opts.prompt,
       size: requestedSize,
+      referenceDataUrls: opts.referenceDataUrls,
     });
   }
 

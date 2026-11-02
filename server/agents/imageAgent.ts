@@ -186,6 +186,8 @@ export async function runImageAgentForStoryboardShot(
     imagePromptOverride?: string;
     /** 分镜指定生图方案时覆盖全局 image */
     imageCfg?: ImageProviderConfig;
+    /** 显式指定参考图列表（覆盖自动匹配的多图） */
+    referenceImageUrlsOverride?: string[];
   },
 ): Promise<GenerateImageResult> {
   const cfg = await readConfig();
@@ -198,7 +200,10 @@ export async function runImageAgentForStoryboardShot(
     aggregateAssets,
     imagePromptOverride: opts?.imagePromptOverride,
   });
-  const referenceDataUrls = await storyboardReferenceImages(project, shot);
+  const referenceDataUrls =
+    opts?.referenceImageUrlsOverride && opts.referenceImageUrlsOverride.length > 0
+      ? opts.referenceImageUrlsOverride
+      : await storyboardReferenceImages(project, shot);
   return generateImage({
     baseUrl: img.baseUrl,
     apiKey: img.apiKey,
