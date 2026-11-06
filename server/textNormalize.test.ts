@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizeHtmlishToPlainText } from "./textNormalize";
+import { normalizeHtmlishToPlainText } from "./textNormalize.js";
 
 describe("normalizeHtmlishToPlainText", () => {
   it("纯文本应原样返回（去首尾空白）", () => {

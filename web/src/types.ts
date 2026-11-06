@@ -44,6 +44,9 @@ export type StoryboardShot = {
   videoRunMode?: VideoRunMode;
   lastFrameImageUrl?: string;
   lastFrameRemoteUrl?: string;
+  audioUrl?: string;
+  voice?: string;
+  speaker?: string;
   videoRefAudioUrl?: string;
   videoRefVideoUrl?: string;
 };
@@ -63,6 +66,7 @@ export type AssetItem = {
   /** 第三方或生图返回 URL（可能过期）；有本地 imageUrl 时视频侧优先本地 */
   remoteImageUrl?: string;
   note?: string;
+  voice?: string;
 };
 
 export type AssetLibraryItem = AssetItem & {
@@ -88,6 +92,7 @@ export type VideoJob = {
   kind?: "video" | "image";
   status: "queued" | "running" | "done" | "failed";
   message: string;
+  shotId?: string;
   shotIndex?: number;
   prompt?: string;
   imageUrl?: string;
@@ -97,6 +102,8 @@ export type VideoJob = {
 };
 
 export type StoryboardImageSize = "1024x1024" | "1024x1536" | "1536x1024";
+
+export type ProjectSummary = Project;
 
 export type Project = {
   id: string;
@@ -188,6 +195,15 @@ export type RemoteCfg = {
   textModels?: RemoteSavedTextModel[];
   imageModels?: RemoteSavedImageModel[];
   videoModels?: RemoteSavedVideoModel[];
+  tts?: {
+    provider?: string;
+    baseUrl?: string;
+    apiKey?: string;
+    model?: string;
+    voice?: string;
+    enabled?: boolean;
+    autoMuxVideo?: boolean;
+  };
   ui?: { autoSave?: boolean; runnerDelayMs?: number; pipelineAllowPartial?: boolean };
   /** EasyImage 图床：上传分镜图写入 remoteImageUrl，供视频参考图拉取 */
   easyImage?: { apiUrl: string; token: string };

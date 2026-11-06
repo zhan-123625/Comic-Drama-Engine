@@ -127,8 +127,11 @@ function assetTypeLabel(t: AssetItem["type"]): string {
 }
 
 export function scoreAsset(shot: StoryboardShot, a: AssetItem): number {
+  const extraIds = new Set((shot.videoExtraAssetIds ?? []).map((x) => String(x).toLowerCase()));
+  if (extraIds.has(a.id.toLowerCase())) return 100;
+
   const composed = composeStoryboardPrompt(shot, { omitDuration: true });
-  const text = `${composed} ${shot.note ?? ""} ${shot.imagePrompt ?? ""}`.toLowerCase();
+  const text = `${composed} ${shot.note ?? ""} ${shot.imagePrompt ?? ""} ${shot.prompt ?? ""}`.toLowerCase();
   const refIds = new Set(
     extractAssetRefIds(`${composed} ${shot.imagePrompt ?? ""} ${shot.content ?? ""} ${shot.prompt ?? ""}`),
   );
@@ -257,18 +260,31 @@ export function orderedAssetsForStoryboardVisual(project: Project, shot: Storybo
     sn != null && Number.isInteger(sn) && sn >= 1 ? sceneAssetsForStoryboardSceneNo(project, sn) : [];
   const runSceneId = new Set(sceneForThisRun.map((x) => x.id));
 
+  const extraAssets = assetsFromVideoExtraIds(project, shot.videoExtraAssetIds);
   const linked = assetsLinkedToStoryboardScene(project, shot);
   const picked = pickMatchedAssetsForShot(project, shot, { max: 48, aggregateAssets: true });
   const excludedSet = new Set((shot.videoExcludedAssetIds ?? []).map((x) => String(x).toLowerCase()));
-  const merged = dedupeAssetsById([...sceneForThisRun, ...linked, ...picked]).filter(
+  const merged = dedupeAssetsById([...extraAssets, ...sceneForThisRun, ...linked, ...picked]).filter(
     (a) => !excludedSet.has(a.id.toLowerCase()),
   );
+
+  const extraSet = new Set(extraAssets.map((x) => x.id.toLowerCase()));
+  const extraChars: AssetItem[] = [];
+  const extraScenes: AssetItem[] = [];
+  const extraOthers: AssetItem[] = [];
+  for (const a of extraAssets) {
+    if (excludedSet.has(a.id.toLowerCase())) continue;
+    if (a.type === "character") extraChars.push(a);
+    else if (a.type === "scene") extraScenes.push(a);
+    else extraOthers.push(a);
+  }
 
   const otherScenes: AssetItem[] = [];
   const chars: AssetItem[] = [];
   const costumes: AssetItem[] = [];
   const rest: AssetItem[] = [];
   for (const a of merged) {
+    if (extraSet.has(a.id.toLowerCase())) continue;
     if (a.type === "scene") {
       if (!runSceneId.has(a.id)) otherScenes.push(a);
     } else if (a.type === "character") chars.push(a);
@@ -276,9 +292,12 @@ export function orderedAssetsForStoryboardVisual(project: Project, shot: Storybo
     else rest.push(a);
   }
   return [
+    ...extraChars,
     ...byAssetIndex(chars),
+    ...extraScenes,
     ...byAssetIndex(sceneForThisRun),
     ...byAssetIndex(otherScenes),
+    ...extraOthers,
     ...byAssetIndex(costumes),
     ...byAssetIndex(rest),
   ];

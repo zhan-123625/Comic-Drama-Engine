@@ -75,31 +75,38 @@ export const BAILIAN_TEXT_MODEL_PRESETS: BailianOpenAiCompatPreset[] = [
 export const BAILIAN_IMAGE_MODEL_PRESETS: BailianOpenAiCompatPreset[] = [
   {
     id: "wanx2.1-t2i-turbo",
-    label: "通义万相 2.1 极速版 (wanx2.1-t2i-turbo)",
+    label: "通义万相 2.1 极速版 (wanx2.1-t2i-turbo) · 推荐分镜生图",
     model: "wanx2.1-t2i-turbo",
     baseUrl: BAILIAN_DASHSCOPE_OPENAI_BASE,
-    capabilityLine: "官方原生异步适配，极速高质量出图，适合分镜与资产制作。",
+    capabilityLine: "官方推荐影视分镜生图；质感细腻现代，由高精结构化 Prompt 注入角色五官与服饰细节。",
   },
   {
     id: "wanx2.1-t2i-plus",
-    label: "通义万相 2.1 标准版 (wanx2.1-t2i-plus)",
+    label: "通义万相 2.1 标准版 (wanx2.1-t2i-plus) · 高精影视级",
     model: "wanx2.1-t2i-plus",
     baseUrl: BAILIAN_DASHSCOPE_OPENAI_BASE,
-    capabilityLine: "官方原生异步适配，质感更细腻逼真。",
+    capabilityLine: "高精影视级生图，画质更细腻，配合单体立绘垫图完美还原角色设定与镜头光影。",
+  },
+  {
+    id: "wanx2.1-imageedit",
+    label: "通义万相 2.1 图像编辑/图生图 (wanx2.1-imageedit)",
+    model: "wanx2.1-imageedit",
+    baseUrl: BAILIAN_DASHSCOPE_OPENAI_BASE,
+    capabilityLine: "官方图生图与指令重绘模型，基于输入底图进行场景扩展、主体编辑与背景替换。",
   },
   {
     id: "wanx-v1",
-    label: "通义万相 1.0 (wanx-v1)",
+    label: "通义万相 1.0 (wanx-v1) · 图生图重绘",
     model: "wanx-v1",
     baseUrl: BAILIAN_DASHSCOPE_OPENAI_BASE,
-    capabilityLine: "文生图标准模型，支持 DashScope 原生适配。",
+    capabilityLine: "支持单图重绘变体（ref_img）。注意：若输入为三视图，将生成三视图重绘变体。",
   },
   {
     id: "qwen-image",
     label: "千问生图 (qwen-image 兼容)",
     model: "qwen-image",
     baseUrl: BAILIAN_DASHSCOPE_OPENAI_BASE,
-    capabilityLine: "自动转接至通义万相 2.1 极速版生成。",
+    capabilityLine: "默认采用万相 2.1 高精影视分镜生图。",
   },
 ];
 
@@ -143,3 +150,119 @@ const VIDEO_MODE_LABELS: Record<BailianVideoRunMode, string> = {
 export function formatBailianVideoModes(modes: BailianVideoRunMode[]): string {
   return modes.map((m) => VIDEO_MODE_LABELS[m]).join("、");
 }
+
+export type BailianTtsModelPreset = {
+  id: string;
+  label: string;
+  model: string;
+  voiceName: string;
+  gender: "female" | "male";
+  appNote: string;
+};
+
+export const BAILIAN_TTS_MODEL_PRESETS: BailianTtsModelPreset[] = [
+  {
+    id: "cosyvoice-v2:longxiaochun_v2",
+    label: "龙小春 · 灵动萌系女童（团团首选·大模型情感语音）",
+    model: "cosyvoice-v2:longxiaochun_v2",
+    voiceName: "龙小春",
+    gender: "female",
+    appNote: "通义 CosyVoice-v2 大模型生成式语音，萌系可爱、情绪饱满、起伏自然生动，绝不机械，团团天选配音！",
+  },
+  {
+    id: "cosyvoice-v2:longshuo_v2",
+    label: "龙硕 · 阳光风趣少年（滚滚首选·大模型情感语音）",
+    model: "cosyvoice-v2:longshuo_v2",
+    voiceName: "龙硕",
+    gender: "male",
+    appNote: "通义 CosyVoice-v2 大模型生成式语音，活泼幽默、富有感情起伏与呼吸感，滚滚天选配音！",
+  },
+  {
+    id: "cosyvoice-v2:longjielidou_v2",
+    label: "杰力豆 · 卡通幽默搞怪（滚滚卡通风·大模型情感语音）",
+    model: "cosyvoice-v2:longjielidou_v2",
+    voiceName: "杰力豆",
+    gender: "male",
+    appNote: "通义 CosyVoice-v2 搞怪喜感卡通童声，极度适合喜剧日常与调皮憨厚的胖达滚滚！",
+  },
+  {
+    id: "cosyvoice-v2:longwan_v2",
+    label: "龙婉 · 温润知性抒情（旁白首选·大模型情感语音）",
+    model: "cosyvoice-v2:longwan_v2",
+    voiceName: "龙婉",
+    gender: "female",
+    appNote: "通义 CosyVoice-v2 温柔知性叙事女声，极度细腻、情感丰富，适合电影级旁白解说。",
+  },
+  {
+    id: "cosyvoice-v2:longmiao_v2",
+    label: "龙喵 · 软萌可爱萝莉（女配萌宠·大模型情感语音）",
+    model: "cosyvoice-v2:longmiao_v2",
+    voiceName: "龙喵",
+    gender: "female",
+    appNote: "奶萌萝莉音色，甜美可爱，适合软萌女角色与小动物配音。",
+  },
+  {
+    id: "cosyvoice-v2:longcheng_v2",
+    label: "龙橙 · 磁性沉稳解说（沉稳男声·大模型情感语音）",
+    model: "cosyvoice-v2:longcheng_v2",
+    voiceName: "龙橙",
+    gender: "male",
+    appNote: "磁性稳重，咬字清晰，适合大叔、长辈角色或纪录片感旁白。",
+  },
+  {
+    id: "cosyvoice-v2:longfeifei_v2",
+    label: "龙菲菲 · 傲娇元气少女（大模型情感语音）",
+    model: "cosyvoice-v2:longfeifei_v2",
+    voiceName: "龙菲菲",
+    gender: "female",
+    appNote: "元气满满，情绪张力强，适合活泼任性或傲娇少女角色。",
+  },
+  {
+    id: "cosyvoice-v2:longlaotie_v2",
+    label: "龙老铁 · 幽默东北大叔（大模型情感语音）",
+    model: "cosyvoice-v2:longlaotie_v2",
+    voiceName: "龙老铁",
+    gender: "male",
+    appNote: "热情豪爽，极具感染力与幽默感，适合喜剧角色。",
+  },
+  {
+    id: "sambert-zhiwei-v1",
+    label: "知薇 · 纯真可爱萝莉（Sambert备选）",
+    model: "sambert-zhiwei-v1",
+    voiceName: "知薇",
+    gender: "female",
+    appNote: "纯真萝莉童声，适合儿童角色与可爱少女。",
+  },
+  {
+    id: "sambert-zhiming-v1",
+    label: "知明 · 幽默风趣男声（Sambert备选）",
+    model: "sambert-zhiming-v1",
+    voiceName: "知明",
+    gender: "male",
+    appNote: "略带幽默口吻，适合轻松喜剧或日常戏剧角色。",
+  },
+  {
+    id: "sambert-zhiting-v1",
+    label: "知婷 · 温柔知性叙事（Sambert备选）",
+    model: "sambert-zhiting-v1",
+    voiceName: "知婷",
+    gender: "female",
+    appNote: "温柔舒缓，情感充沛，适合抒情对白与叙事旁白。",
+  },
+  {
+    id: "sambert-zhixiao-v1",
+    label: "知澖 · 活泼亲切女声（传统标准）",
+    model: "sambert-zhixiao-v1",
+    voiceName: "知澖",
+    gender: "female",
+    appNote: "传统神经语音，音色明亮亲切。",
+  },
+  {
+    id: "sambert-zhichu-v1",
+    label: "知厨 · 沉稳自然男声（传统标准）",
+    model: "sambert-zhichu-v1",
+    voiceName: "知厨",
+    gender: "male",
+    appNote: "成熟男声，咬字沉稳有力。",
+  },
+];

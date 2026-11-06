@@ -11,7 +11,7 @@ const ui = useUiStore();
 
 // Watch for script chapter changes
 watch(
-  pipeline.scriptPipelineChapters,
+  () => pipeline.scriptPipelineChapters,
   (list) => {
     if (!list.length) pipeline.storyboardRefChapterIdx = 0;
     else if (pipeline.storyboardRefChapterIdx >= list.length) pipeline.storyboardRefChapterIdx = list.length - 1;
@@ -20,14 +20,17 @@ watch(
 );
 
 // Watch for selectedScriptChapterIdx changes
-watch(pipeline.selectedScriptChapterIdx, (newI, oldI) => {
-  if (typeof oldI === "number") pipeline.flushScriptTableToChapter(oldI);
-  pipeline.loadScriptTableForChapter(newI);
-});
+watch(
+  () => pipeline.selectedScriptChapterIdx,
+  (newI, oldI) => {
+    if (typeof oldI === "number") pipeline.flushScriptTableToChapter(oldI);
+    pipeline.loadScriptTableForChapter(newI);
+  },
+);
 
 // Watch for scriptTableRows changes
 watch(
-  pipeline.scriptTableRows,
+  () => pipeline.scriptTableRows,
   () => {
     if (pipeline["scriptTableHydrating" as keyof typeof pipeline]) return;
     pipeline.scheduleScriptTableCommit();
@@ -35,10 +38,13 @@ watch(
   { deep: true },
 );
 
-watch(pipeline.scriptTablePrefix, () => {
-  if (pipeline["scriptTableHydrating" as keyof typeof pipeline]) return;
-  pipeline.scheduleScriptTableCommit();
-});
+watch(
+  () => pipeline.scriptTablePrefix,
+  () => {
+    if (pipeline["scriptTableHydrating" as keyof typeof pipeline]) return;
+    pipeline.scheduleScriptTableCommit();
+  },
+);
 
 function onScriptSceneRowContextMenu(e: MouseEvent, index: number) {
   e.preventDefault();

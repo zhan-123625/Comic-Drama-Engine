@@ -127,10 +127,21 @@ export type AgentPromptsConfig = {
   polishAssetPromptSystem?: string;
 };
 
+export type TtsProviderConfig = {
+  provider?: "dashscope" | "openai-compatible";
+  baseUrl?: string;
+  apiKey?: string;
+  model?: string;
+  voice?: string;
+  enabled?: boolean;
+  autoMuxVideo?: boolean;
+};
+
 export type AppConfig = {
   text?: TextProviderConfig;
   image?: ImageProviderConfig;
   video?: VideoProviderConfig;
+  tts?: TtsProviderConfig;
   ui?: UiConfig;
   agentPrompts?: AgentPromptsConfig;
   easyImage?: EasyImageConfig;
@@ -266,6 +277,17 @@ export function mergeAppConfig(prev: AppConfig, patch: AppConfig): AppConfig {
       token: pickApiKey(patch.easyImage.token, prev.easyImage?.token) ?? "",
     };
   }
+  if (patch.tts) {
+    next.tts = {
+      provider: patch.tts.provider ?? prev.tts?.provider ?? "dashscope",
+      baseUrl: pickField(patch.tts.baseUrl, prev.tts?.baseUrl),
+      model: pickField(patch.tts.model, prev.tts?.model) || "sambert-zhixiao-v1",
+      voice: pickField(patch.tts.voice, prev.tts?.voice),
+      apiKey: pickApiKey(patch.tts.apiKey, prev.tts?.apiKey) ?? "",
+      enabled: patch.tts.enabled !== undefined ? patch.tts.enabled : (prev.tts?.enabled ?? true),
+      autoMuxVideo: patch.tts.autoMuxVideo !== undefined ? patch.tts.autoMuxVideo : (prev.tts?.autoMuxVideo ?? true),
+    };
+  }
   return next;
 }
 
@@ -278,6 +300,12 @@ export function maskConfig(cfg: AppConfig): AppConfig {
       ? {
           ...cfg.video,
           apiKey: cfg.video.apiKey ? maskKey(cfg.video.apiKey) : "",
+        }
+      : undefined,
+    tts: cfg.tts
+      ? {
+          ...cfg.tts,
+          apiKey: cfg.tts.apiKey ? maskKey(cfg.tts.apiKey) : "",
         }
       : undefined,
     textModels: cfg.textModels?.map((t) => ({ ...t, apiKey: t.apiKey ? maskKey(t.apiKey) : "" })),

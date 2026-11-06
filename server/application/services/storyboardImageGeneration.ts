@@ -12,7 +12,12 @@ import { store } from "../../store.js";
 export async function generateStoryboardImage(
   projectId: string,
   shotId: string,
-  opts?: { promptOverride?: string; referenceImageUrls?: string[] },
+  opts?: {
+    promptOverride?: string;
+    referenceImageUrls?: string[];
+    refStrength?: number;
+    promptExtend?: boolean;
+  },
 ) {
   const p = await store.get(projectId);
   if (!p) return { ok: false as const, status: 404 as const, error: "project not found" };
@@ -39,6 +44,8 @@ export async function generateStoryboardImage(
     const img = await runImageAgentForStoryboardShot(p, shot, p.storyboardImageSize, {
       imagePromptOverride: opts?.promptOverride,
       referenceImageUrlsOverride: opts?.referenceImageUrls,
+      refStrength: opts?.refStrength,
+      promptExtend: opts?.promptExtend,
       imageCfg,
     });
     const { buf, mime, remoteUrl } = await bytesFromGenerateImageResult(img);

@@ -1,18 +1,199 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref, onUnmounted } from "vue";
 import { usePipelineStore } from "../stores/pipeline";
 import { useProjectsStore } from "../stores/projects";
 import { useConfigStore } from "../stores/config";
 import { useUiStore } from "../stores/ui";
 import { SHOT_DURATION_SEC_MAX, SHOT_DURATION_SEC_MIN } from "../constants";
-import type { StoryboardShot, VideoRunMode } from "../types";
+import type { StoryboardShot, VideoRunMode, Project } from "../types";
 
 const pipeline = usePipelineStore();
 const projectsStore = useProjectsStore();
 const cfg = useConfigStore();
 const ui = useUiStore();
 
-const VIDEO_EXTRA_POPOVER_W = 400;
+const ttsLoadingShotId = ref<string | null>(null);
+
+async function onGenerateShotTts(shot: StoryboardShot) {
+  if (!projectsStore.selected) return;
+  ttsLoadingShotId.value = shot.id;
+  try {
+    const res = await fetch(`/api/projects/${projectsStore.selected.id}/shots/${shot.id}/tts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: shot.dialogue, model: shot.voice }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || err.message || `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    if (data.project) {
+      projectsStore.mergeProject(data.project);
+    } else if (data.audioUrl) {
+      shot.audioUrl = data.audioUrl;
+      shot.videoRefAudioUrl = data.audioUrl;
+    }
+    ui.showToast("台词配音生成成功！", "success");
+  } catch (e) {
+    ui.showToast(`配音失败: ${e instanceof Error ? e.message : String(e)}`, "error");
+  } finally {
+    ttsLoadingShotId.value = null;
+  }
+}
+
+const VIDEO_EXTRA_POPOVER_W = 440;
+
+function currentBgmUrl(musicText?: string): string {
+  const t = (musicText || "").toLowerCase().trim();
+  if (t.startsWith("/api/files/")) return t;
+  if (projectsStore.selected && t.includes(".")) {
+    const fn = t.replace(/^.*[\\/]/, "");
+    return `/api/files/projects/${projectsStore.selected.id}/bgm/${fn}`;
+  }
+  if (t.includes("木琴") || t.includes("逗趣") || t.includes("搞怪") || t.includes("幽默") || t.includes("playful") || t.includes("萌趣")) {
+    return "/api/files/bgm/playful_comic.mp3";
+  }
+  if (t.includes("钢琴") || t.includes("治愈") || t.includes("晨光") || t.includes("温暖") || t.includes("warm")) {
+    return "/api/files/bgm/warm_gentle.mp3";
+  }
+  if (t.includes("悬疑") || t.includes("危机") || t.includes("紧张") || t.includes("惊险") || t.includes("对峙") || t.includes("suspense")) {
+    return "/api/files/bgm/suspense_tension.mp3";
+  }
+  if (t.includes("星火") || t.includes("史诗") || t.includes("科幻") || t.includes("浩瀚") || t.includes("宇宙") || t.includes("epic")) {
+    return "/api/files/bgm/epic_spark.mp3";
+  }
+  if (t.includes("童话") || t.includes("八音盒") || t.includes("竖琴") || t.includes("梦幻") || t.includes("奇幻") || t.includes("dream")) {
+    return "/api/files/bgm/fairytale_dream.mp3";
+  }
+  return "/api/files/bgm/forest_whistle.mp3";
+}
+
+const playingBgmUrl = ref<string | null>(null);
+let bgmAudioInstance: HTMLAudioElement | null = null;
+const remuxingShotId = ref<string | null>(null);
+const remuxingAll = ref(false);
+
+async function remuxShotAudio(shot: StoryboardShot) {
+  if (!projectsStore.selected) return;
+  remuxingShotId.value = shot.id;
+  try {
+    const res = await fetch(`/api/projects/${projectsStore.selected.id}/shots/${shot.id}/remux-video`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || err.message || `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    if (data.project) {
+      projectsStore.mergeProject(data.project);
+    }
+    ui.showToast(`镜头 #${shot.index} 配乐、对白与字幕已成功融合进视频！`, "success");
+  } catch (e) {
+    ui.showToast(`融合音画失败: ${e instanceof Error ? e.message : String(e)}`, "error");
+  } finally {
+    remuxingShotId.value = null;
+  }
+}
+
+async function remuxAllVideosAudio() {
+  if (!projectsStore.selected) return;
+  remuxingAll.value = true;
+  try {
+    const res = await fetch(`/api/projects/${projectsStore.selected.id}/remux-all-videos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || err.message || `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    if (data.project) {
+      projectsStore.mergeProject(data.project);
+    }
+    ui.showToast(`全集融合完成！已成功融合 ${data.remuxedCount} 条镜头视频音轨与字幕！`, "success");
+  } catch (e) {
+    ui.showToast(`全集融合失败: ${e instanceof Error ? e.message : String(e)}`, "error");
+  } finally {
+    remuxingAll.value = false;
+  }
+}
+
+async function onUploadCustomBgm(shot: StoryboardShot, event: Event) {
+  const target = event.target as HTMLInputElement;
+  const file = target.files?.[0];
+  if (!file || !projectsStore.selected) return;
+  try {
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const dataUrl = reader.result as string;
+      const res = await fetch(`/api/projects/${projectsStore.selected!.id}/bgm/upload`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: file.name, dataUrl }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || err.message || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      shot.music = data.file.filename;
+      ui.showToast(`自定义配乐「${file.name}」上传成功并已应用！`, "success");
+    };
+    reader.readAsDataURL(file);
+  } catch (e) {
+    ui.showToast(`上传配乐失败: ${e instanceof Error ? e.message : String(e)}`, "error");
+  } finally {
+    target.value = "";
+  }
+}
+
+function togglePlayBgm(musicText?: string) {
+  const url = currentBgmUrl(musicText);
+  if (bgmAudioInstance && playingBgmUrl.value === url) {
+    bgmAudioInstance.pause();
+    bgmAudioInstance = null;
+    playingBgmUrl.value = null;
+    return;
+  }
+  if (bgmAudioInstance) {
+    bgmAudioInstance.pause();
+    bgmAudioInstance = null;
+  }
+  const audio = new Audio(url);
+  bgmAudioInstance = audio;
+  playingBgmUrl.value = url;
+  audio.onended = () => {
+    if (bgmAudioInstance === audio) {
+      playingBgmUrl.value = null;
+      bgmAudioInstance = null;
+    }
+  };
+  audio.onerror = (e) => {
+    console.error("BGM audio play error:", e);
+    if (bgmAudioInstance === audio) {
+      playingBgmUrl.value = null;
+      bgmAudioInstance = null;
+    }
+  };
+  audio.play().catch((err) => {
+    console.warn("Failed to play BGM:", err);
+    if (bgmAudioInstance === audio) {
+      playingBgmUrl.value = null;
+      bgmAudioInstance = null;
+    }
+  });
+}
+
+onUnmounted(() => {
+  if (bgmAudioInstance) {
+    bgmAudioInstance.pause();
+    bgmAudioInstance = null;
+  }
+});
 
 const shotSizePresets = ["远景", "全景", "中景", "近景", "特写", "大特写"];
 const cameraPresets = ["固定", "推", "拉", "摇", "移", "跟拍", "航拍", "手持", "甩"];
@@ -274,6 +455,7 @@ async function generateAllShotImages(onlyMissing: boolean) {
   if (!targets.length) return;
   pipeline.generatingBatch = true;
   try {
+    await projectsStore.savePatch({ storyboards: p.storyboards });
     for (const s of targets) {
       await generateShotImage(s);
     }
@@ -290,6 +472,7 @@ async function generateSelectedShotImages() {
   if (!targets.length) return;
   pipeline.generatingBatch = true;
   try {
+    await projectsStore.savePatch({ storyboards: p.storyboards });
     for (const s of targets) {
       await generateShotImage(s);
     }
@@ -298,16 +481,33 @@ async function generateSelectedShotImages() {
   }
 }
 
-async function generateShotImage(s: StoryboardShot, customReferenceUrls?: string[]) {
+async function generateShotImage(
+  s: StoryboardShot,
+  opts?: { customReferenceUrls?: string[]; promptOverride?: string } | string[],
+) {
   const p = projectsStore.selected;
   if (!p) return;
   if (pipeline.generatingShotIds.includes(s.id)) return;
   pipeline.generatingShotIds = [...pipeline.generatingShotIds, s.id];
   try {
-    const payload: { referenceImageUrls?: string[] } = {};
-    if (customReferenceUrls?.length) {
-      payload.referenceImageUrls = customReferenceUrls;
+    // 关键：先保存当前分镜表的修改（如编辑的画面内容、分镜提示词、手动引用的资产等），避免后端使用旧数据或生图完成后覆盖前端未保存内容
+    await projectsStore.savePatch({ storyboards: p.storyboards });
+
+    const payload: { referenceImageUrls?: string[]; promptOverride?: string } = {};
+    if (Array.isArray(opts)) {
+      if (opts.length) payload.referenceImageUrls = opts;
+    } else if (opts) {
+      if (opts.customReferenceUrls?.length) {
+        payload.referenceImageUrls = opts.customReferenceUrls;
+      }
+      if (opts.promptOverride?.trim()) {
+        payload.promptOverride = opts.promptOverride.trim();
+      }
     }
+    if (!payload.promptOverride && s.imagePrompt?.trim()) {
+      payload.promptOverride = s.imagePrompt.trim();
+    }
+
     const r = await fetch(`/api/projects/${p.id}/storyboards/${s.id}/generate-image`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -384,14 +584,75 @@ async function runJobs() {
 // ─── Context menu ─────────────────────────────────────────────────────
 function onStoryboardRowContextMenu(e: MouseEvent, id: string) {
   e.preventDefault();
+  pipeline.closeAllContextMenus();
   const menuWidth = 220;
-  const menuHeight = 320;
+  const menuHeight = 360;
   const x = Math.min(e.clientX, (window.innerWidth || 1200) - menuWidth);
   const y = Math.min(e.clientY, (window.innerHeight || 800) - menuHeight);
   pipeline.storyboardRowContextMenu.visible = true;
   pipeline.storyboardRowContextMenu.x = Math.max(10, x);
   pipeline.storyboardRowContextMenu.y = Math.max(10, y);
   pipeline.storyboardRowContextMenu.id = id;
+  pipeline.storyboardRowContextMenu.targetImageUrl = null;
+}
+
+function onStoryboardImageContextMenu(e: MouseEvent, id: string, imageUrl?: string) {
+  e.preventDefault();
+  e.stopPropagation();
+  pipeline.closeAllContextMenus();
+  const menuWidth = 220;
+  const menuHeight = 360;
+  const x = Math.min(e.clientX, (window.innerWidth || 1200) - menuWidth);
+  const y = Math.min(e.clientY, (window.innerHeight || 800) - menuHeight);
+  pipeline.storyboardRowContextMenu.visible = true;
+  pipeline.storyboardRowContextMenu.x = Math.max(10, x);
+  pipeline.storyboardRowContextMenu.y = Math.max(10, y);
+  pipeline.storyboardRowContextMenu.id = id;
+  pipeline.storyboardRowContextMenu.targetImageUrl = imageUrl ?? null;
+}
+
+const contextMenuShot = computed(() => {
+  const id = pipeline.storyboardRowContextMenu.id;
+  if (!id) return null;
+  return projectsStore.selected?.storyboards.find((s) => s.id === id) ?? null;
+});
+
+const contextMenuShotImages = computed(() => {
+  const shot = contextMenuShot.value;
+  if (!shot) return [];
+  return pipeline.shotImageVariantsForShot(shot);
+});
+
+async function deleteShotImage(shotId: string, targetUrl?: string | null) {
+  const p = projectsStore.selected;
+  if (!p) return;
+  const shot = p.storyboards.find((s) => s.id === shotId);
+  if (!shot) return;
+  ui.busy = true;
+  try {
+    const query = targetUrl ? `?url=${encodeURIComponent(targetUrl)}` : "";
+    const r = await fetch(`/api/projects/${p.id}/shots/${shotId}/image${query}`, {
+      method: "DELETE",
+    });
+    if (!r.ok) {
+      const err = (await r.json().catch(() => ({}))) as { error?: string };
+      throw new Error(err.error || "删除分镜图失败");
+    }
+    const body = (await r.json()) as {
+      project: Project;
+      remainingUrls?: string[];
+    };
+    if (body.project) {
+      projectsStore.mergeProject(body.project);
+    }
+    projectsStore.bumpMediaCache(`shot-${shotId}`);
+    await pipeline.fetchShotImageVariants(p.id);
+    ui.showToast(targetUrl ? "已删除该分镜图" : "已清空分镜图", "info");
+  } catch (e) {
+    ui.showToast(e instanceof Error ? e.message : String(e), "error");
+  } finally {
+    ui.busy = false;
+  }
 }
 
 async function onStoryboardRowMenuAction(action: string) {
@@ -402,6 +663,15 @@ async function onStoryboardRowMenuAction(action: string) {
   const shot = p.storyboards.find((s) => s.id === id);
   if (!shot) return;
   if (action === "generate-image") void generateShotImage(shot);
+  if (action === "delete-image") void deleteShotImage(id, pipeline.storyboardRowContextMenu.targetImageUrl);
+  if (action === "delete-all-images") void deleteShotImage(id, null);
+  if (action === "attach-assets") {
+    pipeline.openVideoExtraAttachPopoverAt(
+      shot,
+      pipeline.storyboardRowContextMenu.x,
+      pipeline.storyboardRowContextMenu.y,
+    );
+  }
   if (action === "image-prompt") openStoryboardImagePromptModal(id);
   if (action === "video-prompt") openStoryboardVideoPromptModal(id);
   if (action === "video-run-once") void enqueueSingleShotVideo(id);
@@ -544,6 +814,9 @@ async function pickVideoExtraAssetForShot(shot: StoryboardShot, assetId: string)
   if (p) {
     await projectsStore.savePatch({ storyboards: p.storyboards });
   }
+  if (pipeline.storyboardImageModalVisible && pipeline.storyboardImageModalShotId === shot.id) {
+    void refreshStoryboardImagePreview(false);
+  }
 }
 
 async function clearAssetsForShot(shot: StoryboardShot) {
@@ -558,6 +831,9 @@ async function clearAssetsForShot(shot: StoryboardShot) {
   }
   shot.videoExcludedAssetIds = Array.from(excluded);
   await projectsStore.savePatch({ storyboards: p.storyboards });
+  if (pipeline.storyboardImageModalVisible && pipeline.storyboardImageModalShotId === shot.id) {
+    void refreshStoryboardImagePreview(false);
+  }
 }
 
 async function restoreAutoAssetsForShot(shot: StoryboardShot) {
@@ -565,6 +841,9 @@ async function restoreAutoAssetsForShot(shot: StoryboardShot) {
   if (!p) return;
   shot.videoExcludedAssetIds = [];
   await projectsStore.savePatch({ storyboards: p.storyboards });
+  if (pipeline.storyboardImageModalVisible && pipeline.storyboardImageModalShotId === shot.id) {
+    void refreshStoryboardImagePreview(false);
+  }
 }
 
 async function clearAssetsForSelectedShots() {
@@ -602,6 +881,9 @@ async function removeAssetFromShot(shot: StoryboardShot, assetId: string) {
   if (p) {
     await projectsStore.savePatch({ storyboards: p.storyboards });
   }
+  if (pipeline.storyboardImageModalVisible && pipeline.storyboardImageModalShotId === shot.id) {
+    void refreshStoryboardImagePreview(false);
+  }
 }
 
 // ─── Video model helpers ──────────────────────────────────────────────
@@ -627,13 +909,101 @@ function videoRunModeOptionsForShot(_s: StoryboardShot) {
 }
 
 // ─── Prompt modals ────────────────────────────────────────────────────
+function computeDefaultShotVideoBase(shot: StoryboardShot): string {
+  const content = (shot.content || shot.prompt || "").trim();
+  const shotNo = (shot.shotNo || "").trim() || String(shot.index ?? "");
+  const size = (shot.shotSize || "").trim();
+  const camera = (shot.camera || "").trim();
+
+  let camDesc = "摄影机运镜自然平稳，画面稳定连贯";
+  if (camera) {
+    if (/推|zoom\s*in|push/i.test(camera)) camDesc = "摄影机平稳匀速向前推进，从中景平滑推近至特写，焦点稳稳锁住主体神态与动作核心，镜头平稳无抖动";
+    else if (/拉|zoom\s*out|pull/i.test(camera)) camDesc = "摄影机平缓后拉远移，由局部特写徐徐拉开，展现主体与其身处的环境纵深层次";
+    else if (/摇|pan/i.test(camera)) camDesc = "摄影机水平平稳摇移，镜头顺畅移动展现环境连贯性与主体视线延伸";
+    else if (/跟|跟拍|track|truck/i.test(camera)) camDesc = "摄影机平稳跟拍横移，平滑追踪主体行进动线，构图保持主体在视觉黄金焦点";
+    else if (/仰|low\s*angle/i.test(camera)) camDesc = "低机位仰角摄影，强化主体立体感与空间透视张力，镜头轻微跟随主体微动";
+    else if (/俯|high\s*angle|top/i.test(camera)) camDesc = "高机位俯视拍摄，清晰展现主体与周围地面、环境的相对空间关系";
+    else if (/特写/i.test(camera)) camDesc = "定焦浅景深特写拍摄，主体面部微表情与微观材质细节清晰分明";
+    else camDesc = `摄法为【${camera}】，运镜平滑流畅，动态连贯无突兀跳帧`;
+  }
+  const sizeDesc = size ? `景别设定为【${size}】；` : "";
+
+  const firstMatch = content.match(/(?:【首帧】|\*\*首帧\*\*|首帧[：:])\s*([^\n*【]+)/);
+  const dynamicMatch = content.match(/(?:【(?:镜内动态与神态|镜内动态|镜头动态)】|\*\*(?:镜内动态与神态|镜内动态|镜头动态)\*\*|(?:镜内动态与神态|镜内动态|镜头动态)[：:])\s*([^\n*【]+)/);
+  const lastMatch = content.match(/(?:【尾帧】|\*\*尾帧\*\*|尾帧[：:])\s*([^\n*【]+)/);
+
+  let firstFrame = firstMatch?.[1]?.trim() || content.split(/[。！？\n]/)[0] || content || "主体在画面中心处于准备动作的稳定起幅姿态。";
+  firstFrame = firstFrame.replace(/^镜头\s*\S+[：:]\s*/, "").replace(/[。！？\s]+$/u, "");
+  let dynamic = dynamicMatch?.[1]?.trim() || "主体保持自然呼吸与动作起伏，运动流畅舒展，与周围环境产生自然的物理接触与光影互动";
+  dynamic = dynamic.replace(/[。！？\s]+$/u, "");
+  let lastFrame = lastMatch?.[1]?.trim() || "镜头平稳收束，主体动作自然完成或平稳过渡，画风与光照严格统一";
+  lastFrame = lastFrame.replace(/[。！？\s]+$/u, "");
+
+  return [
+    `【镜头 ${shotNo} · 运镜与机位调度】\n${sizeDesc}${camDesc}。`,
+    `【首帧起幅状态】\n${firstFrame}。`,
+    `【镜内动态演变与走位】\n${dynamic}。主体动作连贯流畅，肢体起伏自然，毛发与服饰随运动产生真实物理风动飘拂，运动规律符合重力惯性。`,
+    `【微表情与神态细节】\n面部微表情丰富传神，眼神灵动有光，呼吸起伏自然，动作与情绪起承转合层次分明。`,
+    `【落幅与终帧收束】\n${lastFrame}。`,
+    `【视频画质规范】\n电影级高帧率丝滑动态，高保真物理运动，无噪点无畸变。严禁生成任何对白字幕、文字条、Logo、水印或UI界面。`,
+  ].join("\n\n");
+}
+
+function setDraftVideoDuration(sec: number) {
+  pipeline.storyboardVideoDraftDuration = sec;
+  void refreshStoryboardVideoPreview();
+}
+
+function clampRoundDraftVideoDuration() {
+  const d = pipeline.storyboardVideoDraftDuration;
+  if (typeof d !== "number" || !Number.isFinite(d)) {
+    pipeline.storyboardVideoDraftDuration = 5;
+    return;
+  }
+  pipeline.storyboardVideoDraftDuration = Math.min(
+    SHOT_DURATION_SEC_MAX,
+    Math.max(SHOT_DURATION_SEC_MIN, Math.round(d)),
+  );
+  void refreshStoryboardVideoPreview();
+}
+
+function enrichVideoDraftPrompt() {
+  const shot = pipeline.storyboardVideoModalShot;
+  if (!shot) return;
+  if (pipeline.storyboardVideoEnrichedBase?.trim()) {
+    pipeline.storyboardVideoDraftPrompt = pipeline.storyboardVideoEnrichedBase.trim();
+  } else {
+    pipeline.storyboardVideoDraftPrompt = computeDefaultShotVideoBase(shot);
+  }
+  ui.showToast("已应用丰富电影级动态提示词", "success");
+  void refreshStoryboardVideoPreview();
+}
+
+function enrichImageDraftPrompt() {
+  const shot = pipeline.storyboardImageModalShot;
+  if (!shot) return;
+  if (pipeline.storyboardImageEnrichedBase?.trim()) {
+    pipeline.storyboardImageDraftPrompt = pipeline.storyboardImageEnrichedBase.trim();
+  } else {
+    pipeline.storyboardImageDraftPrompt = computeDefaultShotImageBase(shot);
+  }
+  ui.showToast("已应用丰富光影与质感提示词", "success");
+  void refreshStoryboardImagePreview();
+}
+
 function openStoryboardVideoPromptModal(shotId: string) {
   const p = projectsStore.selected;
   if (!p) return;
   const shot = p.storyboards.find((s) => s.id === shotId);
   if (!shot) return;
   pipeline.storyboardVideoModalShotId = shotId;
-  pipeline.storyboardVideoDraftPrompt = shot.videoPrompt ?? "";
+  pipeline.storyboardVideoDraftDuration = shot.durationSec ?? 5;
+
+  const localDefaultBase = computeDefaultShotVideoBase(shot);
+  pipeline.storyboardVideoDefaultBase = localDefaultBase;
+  const hasCustom = Boolean(shot.videoPrompt && shot.videoPrompt.trim());
+  pipeline.storyboardVideoDraftPrompt = hasCustom ? shot.videoPrompt!.trim() : localDefaultBase;
+
   pipeline.storyboardVideoEnrichedPreview = "";
   pipeline.storyboardVideoTextPayloadPreview = "";
   pipeline.storyboardVideoPreviewMatched = [];
@@ -641,6 +1011,7 @@ function openStoryboardVideoPromptModal(shotId: string) {
   pipeline.storyboardVideoPreviewApiUrls = [];
   pipeline.storyboardVideoDurationApiHint = "";
   pipeline.storyboardVideoModalVisible = true;
+  void refreshStoryboardVideoPreview(!hasCustom);
 }
 
 function closeStoryboardVideoPromptModal() {
@@ -648,7 +1019,16 @@ function closeStoryboardVideoPromptModal() {
   pipeline.storyboardVideoModalShotId = null;
 }
 
-async function refreshStoryboardVideoPreview() {
+function resetToDefaultVideoBase() {
+  const shot = pipeline.storyboardVideoModalShot;
+  if (!shot) return;
+  const def = pipeline.storyboardVideoDefaultBase.trim() || computeDefaultShotVideoBase(shot);
+  pipeline.storyboardVideoDraftPrompt = def;
+  ui.showToast("已恢复默认视频基底提示词", "info");
+  void refreshStoryboardVideoPreview();
+}
+
+async function refreshStoryboardVideoPreview(fillIfMatchesDefault = false) {
   const p = projectsStore.selected;
   const shot = pipeline.storyboardVideoModalShot;
   if (!p || !shot) return;
@@ -657,19 +1037,46 @@ async function refreshStoryboardVideoPreview() {
     const r = await fetch(`/api/projects/${p.id}/storyboards/${shot.id}/video-prompt-preview`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ videoPrompt: pipeline.storyboardVideoDraftPrompt }),
+      body: JSON.stringify({
+        promptOverride: pipeline.storyboardVideoDraftPrompt,
+        videoPrompt: pipeline.storyboardVideoDraftPrompt,
+        durationSec: pipeline.storyboardVideoDraftDuration,
+      }),
     });
     const body = (await r.json().catch(() => ({}))) as Record<string, unknown>;
     if (!r.ok) throw new Error(String(body.error ?? "预览失败"));
     pipeline.storyboardVideoTextPayloadPreview = String(body.textPayload ?? "");
-    pipeline.storyboardVideoEnrichedPreview = String(body.enrichedText ?? body.textPayload ?? "");
-    pipeline.storyboardVideoPreviewMatched = Array.isArray(body.matched)
-      ? (body.matched as typeof pipeline.storyboardVideoPreviewMatched)
+    pipeline.storyboardVideoEnrichedPreview = String(body.enrichedText ?? body.enrichedPrompt ?? body.textPayload ?? "");
+
+    if (typeof body.defaultBasePrompt === "string" && body.defaultBasePrompt.trim()) {
+      pipeline.storyboardVideoDefaultBase = body.defaultBasePrompt.trim();
+    } else if (typeof body.basePrompt === "string" && body.basePrompt.trim()) {
+      pipeline.storyboardVideoDefaultBase = body.basePrompt.trim();
+    }
+    if (typeof body.enrichedBasePrompt === "string" && body.enrichedBasePrompt.trim()) {
+      pipeline.storyboardVideoEnrichedBase = body.enrichedBasePrompt.trim();
+    }
+
+    if (fillIfMatchesDefault || !pipeline.storyboardVideoDraftPrompt.trim()) {
+      const bestBase =
+        typeof body.basePrompt === "string" && body.basePrompt.trim()
+          ? body.basePrompt.trim()
+          : pipeline.storyboardVideoDefaultBase;
+      if (bestBase) {
+        pipeline.storyboardVideoDraftPrompt = bestBase;
+      }
+    }
+
+    const rawVideoMatched = body.matchedAssets ?? body.matched;
+    pipeline.storyboardVideoPreviewMatched = Array.isArray(rawVideoMatched)
+      ? (rawVideoMatched as typeof pipeline.storyboardVideoPreviewMatched)
       : [];
-    pipeline.storyboardVideoPreviewSlots = Array.isArray(body.slots)
-      ? (body.slots as typeof pipeline.storyboardVideoPreviewSlots)
+    const rawVideoSlots = body.referenceSlots ?? body.slots;
+    pipeline.storyboardVideoPreviewSlots = Array.isArray(rawVideoSlots)
+      ? (rawVideoSlots as typeof pipeline.storyboardVideoPreviewSlots)
       : [];
-    pipeline.storyboardVideoPreviewApiUrls = Array.isArray(body.apiUrls) ? (body.apiUrls as string[]) : [];
+    const rawVideoApiUrls = body.apiImageUrls ?? body.apiUrls;
+    pipeline.storyboardVideoPreviewApiUrls = Array.isArray(rawVideoApiUrls) ? (rawVideoApiUrls as string[]) : [];
     pipeline.storyboardVideoDurationApiHint = String(body.durationApiHint ?? "");
   } catch (e) {
     ui.showToast(e instanceof Error ? e.message : String(e), "error");
@@ -683,7 +1090,14 @@ async function saveStoryboardVideoPromptFromModal() {
   const shot = pipeline.storyboardVideoModalShot;
   if (!p || !shot) return;
   shot.videoPrompt = pipeline.storyboardVideoDraftPrompt.trim() || undefined;
+  if (pipeline.storyboardVideoDraftDuration != null && Number.isFinite(pipeline.storyboardVideoDraftDuration)) {
+    shot.durationSec = Math.min(
+      SHOT_DURATION_SEC_MAX,
+      Math.max(SHOT_DURATION_SEC_MIN, Math.round(pipeline.storyboardVideoDraftDuration)),
+    );
+  }
   await projectsStore.savePatch({ storyboards: p.storyboards });
+  ui.showToast("已保存基底提示词与视频时长到分镜", "success");
 }
 
 async function enqueueStoryboardVideoFromModal() {
@@ -691,6 +1105,12 @@ async function enqueueStoryboardVideoFromModal() {
   const shot = pipeline.storyboardVideoModalShot;
   if (!p || !shot) return;
   shot.videoPrompt = pipeline.storyboardVideoDraftPrompt.trim() || undefined;
+  if (pipeline.storyboardVideoDraftDuration != null && Number.isFinite(pipeline.storyboardVideoDraftDuration)) {
+    shot.durationSec = Math.min(
+      SHOT_DURATION_SEC_MAX,
+      Math.max(SHOT_DURATION_SEC_MIN, Math.round(pipeline.storyboardVideoDraftDuration)),
+    );
+  }
   await projectsStore.savePatch({ storyboards: p.storyboards });
   await enqueueVideos("selected", [shot.id]);
   closeStoryboardVideoPromptModal();
@@ -701,24 +1121,84 @@ async function runStoryboardVideoOnceFromModal() {
   const shot = pipeline.storyboardVideoModalShot;
   if (!p || !shot) return;
   shot.videoPrompt = pipeline.storyboardVideoDraftPrompt.trim() || undefined;
+  if (pipeline.storyboardVideoDraftDuration != null && Number.isFinite(pipeline.storyboardVideoDraftDuration)) {
+    shot.durationSec = Math.min(
+      SHOT_DURATION_SEC_MAX,
+      Math.max(SHOT_DURATION_SEC_MIN, Math.round(pipeline.storyboardVideoDraftDuration)),
+    );
+  }
   await projectsStore.savePatch({ storyboards: p.storyboards });
   await enqueueSingleShotVideo(shot.id);
   closeStoryboardVideoPromptModal();
 }
 
 // Image prompt modal
+function computeDefaultShotImageBase(shot: StoryboardShot): string {
+  let content = (shot.content || shot.prompt || "").trim();
+  content = content.replace(/^镜头\s*\S+[：:]\s*/, "");
+  const firstFrameMatch = content.match(/(?:【首帧】|\*\*首帧\*\*|首帧[：:])\s*([^\n*【]+)/);
+  if (firstFrameMatch && firstFrameMatch[1]) {
+    content = firstFrameMatch[1].trim();
+  } else {
+    const seqMatch = content.match(/^(.*?)(?=然后|接着|随后|继而|忽然|突然|最后|终于|先是|随即|不一会儿|片刻之后|紧接着|下一秒)/);
+    if (seqMatch && seqMatch[1] && seqMatch[1].trim().length >= 8) {
+      content = seqMatch[1].trim();
+    }
+  }
+  content = content.replace(/^镜头\s*\S+[：:]\s*/, "").replace(/[。！？\s]+$/u, "");
+
+  const shotNo = shot.shotNo || String(shot.index ?? "");
+  const size = (shot.shotSize || "").trim();
+  const camera = (shot.camera || "").trim();
+
+  const detailBits: string[] = [];
+  if (size === "特写" || size === "近景") {
+    detailBits.push("面部微表情传神细腻，眼眸清澈带有灵动高光，神态生动，睫毛与毛发根根分明，耳尖泛着柔和透光感");
+  } else if (size === "全景" || size === "远景") {
+    detailBits.push("主体与空间环境比例自然协调，空气透视与纵深层次丰富，展现出浓郁的空间氛围");
+  } else {
+    detailBits.push("主体姿态生动自然，肢体语言饱满，与随身物件自然交互，地面接触阴影真实细腻");
+  }
+  detailBits.push("温暖柔和的自然光照斜洒，斑驳丁达尔微光点缀，浅景深电影柔焦虚化，8k壁纸级细腻画质");
+
+  const lines: string[] = [];
+  if (content) {
+    if (/^镜头\s*\S+[：:]/.test(content)) {
+      lines.push(`${content}。${detailBits.join("，")}。`);
+    } else {
+      lines.push(`镜头 ${shotNo}：${content}。${detailBits.join("，")}。`);
+    }
+  }
+  const meta: string[] = [];
+  if (size && !content.includes(`景别：${size}`)) {
+    meta.push(`景别：${size}`);
+  }
+  if (camera && !content.includes(`摄法：${camera}`)) {
+    meta.push(`摄法：${camera}`);
+  }
+  if (meta.length) lines.push(meta.join("；"));
+  return lines.join("\n").trim();
+}
+
 function openStoryboardImagePromptModal(shotId: string) {
   const p = projectsStore.selected;
   if (!p) return;
   const shot = p.storyboards.find((s) => s.id === shotId);
   if (!shot) return;
   pipeline.storyboardImageModalShotId = shotId;
-  pipeline.storyboardImageDraftPrompt = shot.imagePrompt ?? "";
+
+  const localDefaultBase = computeDefaultShotImageBase(shot);
+  pipeline.storyboardImageDefaultBase = localDefaultBase;
+  const hasCustom = Boolean(shot.imagePrompt && shot.imagePrompt.trim());
+  pipeline.storyboardImageDraftPrompt = hasCustom ? shot.imagePrompt!.trim() : localDefaultBase;
+
   pipeline.storyboardImageFullPreview = "";
   pipeline.storyboardImagePreviewMatched = [];
   pipeline.storyboardImagePreviewSlots = [];
   pipeline.storyboardImagePreviewApiUrls = [];
   pipeline.storyboardImageModalVisible = true;
+
+  void refreshStoryboardImagePreview(!hasCustom);
 }
 
 function closeStoryboardImagePromptModal() {
@@ -726,7 +1206,16 @@ function closeStoryboardImagePromptModal() {
   pipeline.storyboardImageModalShotId = null;
 }
 
-async function refreshStoryboardImagePreview() {
+function resetToDefaultImageBase() {
+  const shot = pipeline.storyboardImageModalShot;
+  if (!shot) return;
+  const def = pipeline.storyboardImageDefaultBase.trim() || computeDefaultShotImageBase(shot);
+  pipeline.storyboardImageDraftPrompt = def;
+  ui.showToast("已恢复默认基底提示词", "info");
+  void refreshStoryboardImagePreview();
+}
+
+async function refreshStoryboardImagePreview(fillIfMatchesDefault = false) {
   const p = projectsStore.selected;
   const shot = pipeline.storyboardImageModalShot;
   if (!p || !shot) return;
@@ -735,23 +1224,69 @@ async function refreshStoryboardImagePreview() {
     const r = await fetch(`/api/projects/${p.id}/storyboards/${shot.id}/image-prompt-preview`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ imagePrompt: pipeline.storyboardImageDraftPrompt }),
+      body: JSON.stringify({
+        promptOverride: pipeline.storyboardImageDraftPrompt,
+        imagePrompt: pipeline.storyboardImageDraftPrompt,
+      }),
     });
     const body = (await r.json().catch(() => ({}))) as Record<string, unknown>;
     if (!r.ok) throw new Error(String(body.error ?? "预览失败"));
     pipeline.storyboardImageFullPreview = String(body.fullPrompt ?? "");
-    pipeline.storyboardImagePreviewMatched = Array.isArray(body.matched)
-      ? (body.matched as typeof pipeline.storyboardImagePreviewMatched)
+
+    if (typeof body.defaultBasePrompt === "string" && body.defaultBasePrompt.trim()) {
+      pipeline.storyboardImageDefaultBase = body.defaultBasePrompt.trim();
+    } else if (typeof body.basePrompt === "string" && body.basePrompt.trim()) {
+      pipeline.storyboardImageDefaultBase = body.basePrompt.trim();
+    }
+    if (typeof body.enrichedBasePrompt === "string" && body.enrichedBasePrompt.trim()) {
+      pipeline.storyboardImageEnrichedBase = body.enrichedBasePrompt.trim();
+    }
+
+    if (fillIfMatchesDefault || !pipeline.storyboardImageDraftPrompt.trim()) {
+      const bestBase =
+        typeof body.basePrompt === "string" && body.basePrompt.trim()
+          ? body.basePrompt.trim()
+          : pipeline.storyboardImageDefaultBase;
+      if (bestBase) {
+        pipeline.storyboardImageDraftPrompt = bestBase;
+      }
+    }
+
+    const rawImageMatched = body.matchedAssets ?? body.matched;
+    pipeline.storyboardImagePreviewMatched = Array.isArray(rawImageMatched)
+      ? (rawImageMatched as typeof pipeline.storyboardImagePreviewMatched)
       : [];
-    pipeline.storyboardImagePreviewSlots = Array.isArray(body.slots)
-      ? (body.slots as typeof pipeline.storyboardImagePreviewSlots)
+    const rawImageSlots = body.referenceSlots ?? body.slots;
+    pipeline.storyboardImagePreviewSlots = Array.isArray(rawImageSlots)
+      ? (rawImageSlots as typeof pipeline.storyboardImagePreviewSlots)
       : [];
-    pipeline.storyboardImagePreviewApiUrls = Array.isArray(body.apiUrls) ? (body.apiUrls as string[]) : [];
+    const rawImageApiUrls = body.apiImageUrls ?? body.apiUrls;
+    pipeline.storyboardImagePreviewApiUrls = Array.isArray(rawImageApiUrls) ? (rawImageApiUrls as string[]) : [];
   } catch (e) {
     ui.showToast(e instanceof Error ? e.message : String(e), "error");
   } finally {
     pipeline.storyboardImagePreviewLoading = false;
   }
+}
+
+const modalAttachedAssets = computed(() => {
+  const shot = pipeline.storyboardImageModalShot;
+  const p = projectsStore.selected;
+  if (!shot || !p) return [];
+  const extraIds = new Set((shot.videoExtraAssetIds ?? []).map((x) => String(x).toLowerCase()));
+  return p.assets.filter((a) => extraIds.has(a.id.toLowerCase()));
+});
+
+function removeAssetFromModalShot(assetId: string) {
+  const shot = pipeline.storyboardImageModalShot;
+  if (!shot) return;
+  void removeAssetFromShot(shot, assetId);
+}
+
+function openAssetAttachFromModal(e: MouseEvent) {
+  const shot = pipeline.storyboardImageModalShot;
+  if (!shot) return;
+  pipeline.toggleVideoExtraAttachPopover(shot, e);
 }
 
 async function saveStoryboardImagePromptFromModal() {
@@ -760,12 +1295,20 @@ async function saveStoryboardImagePromptFromModal() {
   if (!p || !shot) return;
   shot.imagePrompt = pipeline.storyboardImageDraftPrompt.trim() || undefined;
   await projectsStore.savePatch({ storyboards: p.storyboards });
+  ui.showToast("已保存基底提示词到分镜", "success");
 }
 
 async function saveAndGenerateStoryboardImageFromModal() {
   await saveStoryboardImagePromptFromModal();
   const shot = pipeline.storyboardImageModalShot;
-  if (shot) await generateShotImage(shot, pipeline.storyboardImagePreviewApiUrls);
+  if (shot) {
+    await generateShotImage(shot, {
+      promptOverride: pipeline.storyboardImageDraftPrompt.trim() || undefined,
+      customReferenceUrls: pipeline.storyboardImagePreviewApiUrls.length
+        ? pipeline.storyboardImagePreviewApiUrls
+        : undefined,
+    });
+  }
 }
 
 async function runStoryboardImageOnceFromModal() {
@@ -774,7 +1317,12 @@ async function runStoryboardImageOnceFromModal() {
   if (!p || !shot) return;
   shot.imagePrompt = pipeline.storyboardImageDraftPrompt.trim() || undefined;
   await projectsStore.savePatch({ storyboards: p.storyboards });
-  await generateShotImage(shot, pipeline.storyboardImagePreviewApiUrls);
+  await generateShotImage(shot, {
+    promptOverride: pipeline.storyboardImageDraftPrompt.trim() || undefined,
+    customReferenceUrls: pipeline.storyboardImagePreviewApiUrls.length
+      ? pipeline.storyboardImagePreviewApiUrls
+      : undefined,
+  });
   closeStoryboardImagePromptModal();
 }
 </script>
@@ -883,6 +1431,15 @@ async function runStoryboardImageOnceFromModal() {
           <button
             class="btn"
             type="button"
+            :disabled="ui.busy || remuxingAll || !projectsStore.selected.videoJobs.some(j => j.status === 'done')"
+            title="一键将设定时长、对白字幕与小说背景音乐融合进所有已生成的分镜视频中（无需重新生成视频画面）"
+            @click="remuxAllVideosAudio"
+          >
+            {{ remuxingAll ? "全镜融合中..." : "🎵 全镜融合配乐与字幕" }}
+          </button>
+          <button
+            class="btn"
+            type="button"
             :disabled="ui.busy || !projectsStore.selected.storyboards.length"
             @click="openStoryboardVideoPromptModal(projectsStore.selected.storyboards[0]!.id)"
           >
@@ -955,7 +1512,7 @@ async function runStoryboardImageOnceFromModal() {
             <div v-else>画面内容 / 景别 / 摄法 / 时长(整秒)</div>
             <div v-if="pipeline.storyboardProMode">画面内容 / 台词 / 音乐 / 音效</div>
             <div v-else>台词 / 音乐 / 音效 / 备注</div>
-            <div class="shot-video-assets-head" title="自动按文案/视频提示词匹配">视频引用资产</div>
+            <div class="shot-video-assets-head" title="自动按文案/提示词匹配，支持手动附加或排除（分镜生图与视频通用）">引用资产（分镜/视频）</div>
             <div title="对应镜头号的视频任务">视频状态 / 成片</div>
           </div>
           <div
@@ -1066,6 +1623,16 @@ async function runStoryboardImageOnceFromModal() {
                 >
                   生图队列 <code :data-job="j.status">{{ j.status }}</code>
                   <span class="shot-pending-msg">{{ j.message }}</span>
+                  <button
+                    v-if="j.status === 'failed'"
+                    type="button"
+                    class="btn-close-compact"
+                    title="清除此报错提示"
+                    style="margin-left: 6px; font-size: 11px; cursor: pointer; padding: 0 4px; line-height: 1"
+                    @click="pipeline.dismissJob(j.id)"
+                  >
+                    ✕
+                  </button>
                 </span>
               </div>
               <div v-if="pipeline.shotImageVariantsForShot(s).length" class="shot-image-variants-strip">
@@ -1080,10 +1647,11 @@ async function runStoryboardImageOnceFromModal() {
                     :class="{ 'shot-variant-thumb--current': pipeline.storyboardImageUrlMatch(s.imageUrl, u) }"
                     :title="
                       pipeline.storyboardImageUrlMatch(s.imageUrl, u)
-                        ? '当前采用的参考图'
-                        : '预览；下方可「采用」为当前参考图'
+                        ? '当前采用的参考图（右键可删除分镜图）'
+                        : '预览；下方可「采用」为参考图（右键可删除此图）'
                     "
                     @click="pipeline.openImagePreview(projectsStore.mediaSrc(u, `shot-${s.id}`))"
+                    @contextmenu="onStoryboardImageContextMenu($event, s.id, u)"
                   >
                     <img :src="projectsStore.mediaSrc(u, `shot-${s.id}`)" alt="" />
                   </button>
@@ -1177,16 +1745,33 @@ async function runStoryboardImageOnceFromModal() {
                     <option value="">摄法（可选）</option>
                     <option v-for="x in cameraPresets" :key="x" :value="x">{{ x }}</option>
                   </select>
-                  <input
-                    v-model.number="s.durationSec"
-                    type="number"
-                    :min="SHOT_DURATION_SEC_MIN"
-                    :max="SHOT_DURATION_SEC_MAX"
-                    step="1"
-                    class="input small"
-                    :placeholder="`整秒 ${SHOT_DURATION_SEC_MIN}--${SHOT_DURATION_SEC_MAX}`"
-                    @change="clampRoundShotDuration(s)"
-                  />
+                  <div class="row" style="align-items: center; gap: 4px">
+                    <input
+                      v-model.number="s.durationSec"
+                      type="number"
+                      :min="SHOT_DURATION_SEC_MIN"
+                      :max="SHOT_DURATION_SEC_MAX"
+                      step="1"
+                      class="input small"
+                      style="width: 56px"
+                      :placeholder="`秒`"
+                      title="视频镜头时长（秒）"
+                      @change="clampRoundShotDuration(s)"
+                    />
+                    <span class="hint" style="font-size: 11px">秒</span>
+                    <button
+                      v-for="sec in [3, 5, 8, 10]"
+                      :key="sec"
+                      type="button"
+                      class="btn"
+                      :class="{ primary: s.durationSec === sec }"
+                      style="padding: 1px 6px; font-size: 11px; min-width: unset; height: 26px; line-height: 24px"
+                      :title="`快速设为 ${sec} 秒`"
+                      @click="s.durationSec = sec; clampRoundShotDuration(s)"
+                    >
+                      {{ sec }}s
+                    </button>
+                  </div>
                 </div>
                 <input v-model="s.note" class="input" placeholder="备注（可空）" style="margin-top: 8px" />
               </div>
@@ -1199,16 +1784,101 @@ async function runStoryboardImageOnceFromModal() {
                   placeholder="台词/旁白（可空）"
                   style="margin-top: 8px"
                 />
+                <div v-if="s.dialogue?.trim()" style="font-size: 11px; color: #38bdf8; margin: 4px 0 2px 2px; display: flex; align-items: center; gap: 4px;">
+                  <span>💬 成片自动烧录对白字幕</span>
+                </div>
+                <div v-if="s.dialogue?.trim() || s.audioUrl || s.videoRefAudioUrl" class="shot-tts-actions">
+                  <span v-if="s.speaker" class="shot-speaker-badge" :title="`说话人: ${s.speaker}`">{{ s.speaker }}</span>
+                  <select v-model="s.voice" class="input shot-voice-select" title="配音音色（空则智能匹配角色或旁白）">
+                    <option value="">（智能自动音色：团团配小春，滚滚配龙硕）</option>
+                    <optgroup label="✨ CosyVoice-v2 大模型情感音色（强烈推荐）">
+                      <option value="cosyvoice-v2:longxiaochun_v2">龙小春 · 灵动萌系女童（团团首选）</option>
+                      <option value="cosyvoice-v2:longshuo_v2">龙硕 · 阳光风趣少年（滚滚首选）</option>
+                      <option value="cosyvoice-v2:longjielidou_v2">杰力豆 · 卡通幽默搞怪（滚滚卡通风）</option>
+                      <option value="cosyvoice-v2:longwan_v2">龙婉 · 温润知性抒情（旁白首选）</option>
+                      <option value="cosyvoice-v2:longmiao_v2">龙喵 · 软萌可爱萝莉</option>
+                      <option value="cosyvoice-v2:longcheng_v2">龙橙 · 磁性沉稳解说</option>
+                    </optgroup>
+                    <optgroup label="🎙️ Sambert 备选音色">
+                      <option value="sambert-zhiwei-v1">知薇 · 纯真可爱萝莉</option>
+                      <option value="sambert-zhiming-v1">知明 · 幽默风趣男声</option>
+                      <option value="sambert-zhiting-v1">知婷 · 温柔知性叙事</option>
+                      <option value="sambert-zhixiao-v1">知澖 · 活泼亲切女声</option>
+                      <option value="sambert-zhichu-v1">知厨 · 沉稳自然男声</option>
+                    </optgroup>
+                  </select>
+                  <button
+                    type="button"
+                    class="btn small shot-tts-btn"
+                    :disabled="ttsLoadingShotId === s.id"
+                    @click="onGenerateShotTts(s)"
+                  >
+                    {{ ttsLoadingShotId === s.id ? "生成中..." : (s.audioUrl || s.videoRefAudioUrl ? "🔄 重新配音" : "🔊 生成台词配音") }}
+                  </button>
+                  <audio
+                    v-if="s.audioUrl || s.videoRefAudioUrl"
+                    :src="s.audioUrl || s.videoRefAudioUrl"
+                    controls
+                    class="shot-audio-control"
+                    preload="none"
+                  />
+                </div>
                 <p v-if="shotDialogueMatchesScript(s)" class="hint script-shot-link-hint">台词见于剧本（全文匹配）</p>
-                <div class="row" style="margin-top: 8px; align-items: flex-start">
-                  <input v-model="s.music" class="input" placeholder="音乐（可空）" />
-                  <input v-model="s.sfx" class="input" placeholder="音效（可空）" />
+                <div class="row" style="margin-top: 8px; gap: 8px; align-items: center">
+                  <input v-model="s.music" class="input" style="flex: 1; min-width: 0" placeholder="背景音乐（可空，智能匹配BGM）" />
+                  <input v-model="s.sfx" class="input" style="flex: 1; min-width: 0" placeholder="音效（可空）" />
+                </div>
+                <div class="shot-bgm-toolbar" style="margin-top: 6px; display: flex; flex-direction: column; gap: 5px; background: rgba(15, 23, 42, 0.45); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 6px; padding: 6px 8px;">
+                  <div style="display: flex; align-items: center; justify-content: space-between; gap: 6px; flex-wrap: wrap;">
+                    <div style="display: flex; align-items: center; gap: 6px; min-width: 0">
+                      <span class="hint" style="font-size: 11px; color: #94a3b8; font-weight: 500; white-space: nowrap">🎵 小说情境配乐</span>
+                      <span v-if="s.music?.trim()" style="color: #38bdf8; font-size: 11px; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" :title="s.music">
+                        · {{ s.music }}
+                      </span>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                      <button
+                        type="button"
+                        class="btn small"
+                        :class="{ primary: playingBgmUrl === currentBgmUrl(s.music) }"
+                        style="padding: 1px 7px; font-size: 11px; height: 22px; line-height: 20px; color: #00f0ff"
+                        :title="playingBgmUrl === currentBgmUrl(s.music) ? '点击停止试听' : '点击试听当前匹配的背景音乐'"
+                        @click="togglePlayBgm(s.music)"
+                      >
+                        {{ playingBgmUrl === currentBgmUrl(s.music) ? "⏹ 停止试听" : "▶ 试听" }}
+                      </button>
+                      <label class="btn small" style="padding: 1px 7px; font-size: 11px; height: 22px; line-height: 20px; cursor: pointer; color: #a5b4fc" title="上传您本地的小说专属配乐（MP3/WAV）">
+                        📁 上传
+                        <input type="file" accept="audio/*" style="display: none" @change="onUploadCustomBgm(s, $event)" />
+                      </label>
+                    </div>
+                  </div>
+                  <div style="display: flex; align-items: center; gap: 5px; flex-wrap: wrap;">
+                    <button
+                      v-for="b in [
+                        { label: '🎋 竹林国风', val: '微风竹林 · 笛韵筝鸣' },
+                        { label: '🪵 萌趣日常', val: '萌趣日常 · 欢快木琴与拨弦' },
+                        { label: '🎹 治愈温情', val: '温暖治愈 · 晨光微漾钢琴' },
+                        { label: '🔍 悬疑紧迫', val: '悬疑紧迫 · 危机低吟脉冲' },
+                        { label: '🌌 星火史诗', val: '星火浩瀚 · 史诗科幻管弦' },
+                        { label: '🔮 纯真童话', val: '纯真童话 · 梦幻八音盒与竖琴' },
+                      ]"
+                      :key="b.label"
+                      type="button"
+                      class="btn small"
+                      :class="{ primary: s.music?.includes(b.val.slice(0, 4)) }"
+                      style="padding: 1px 6px; font-size: 11px; height: 22px; line-height: 20px; border-radius: 4px;"
+                      @click="s.music = b.val"
+                    >
+                      {{ b.label }}
+                    </button>
+                  </div>
                 </div>
                 <textarea
                   v-model="s.prompt"
                   class="area"
                   rows="2"
-                  placeholder="兼容字段 prompt（可留空）"
+                  placeholder="分镜提示词 prompt（可留空，填写则补充注入生图）"
                   style="margin-top: 8px"
                 />
               </div>
@@ -1282,9 +1952,10 @@ async function runStoryboardImageOnceFromModal() {
                           pipeline.videoExtraAttachPopover.visible && pipeline.videoExtraAttachPopover.shotId === s.id,
                       }"
                       :disabled="!assetsSelectableForVideoExtra(s).length"
+                      title="手动为本镜头附加指定资产引用（分镜生图与视频通用）"
                       @click.stop="pipeline.toggleVideoExtraAttachPopover(s, $event)"
                     >
-                      附加到本镜视频
+                      附加资产引用
                       <span v-if="assetsSelectableForVideoExtra(s).length" class="storyboard-extra-asset-open-count">{{
                         assetsSelectableForVideoExtra(s).length
                       }}</span>
@@ -1348,6 +2019,17 @@ async function runStoryboardImageOnceFromModal() {
                       <video class="video-preview-tap__thumb" :src="j.resultUrl" muted playsinline preload="metadata" />
                       <span class="video-preview-tap__hint">> 居中播放</span>
                     </div>
+                    <button
+                      v-if="j.resultUrl && pipeline.isLikelyVideoResultUrl(j.resultUrl)"
+                      type="button"
+                      class="btn small primary"
+                      style="width: 100%; margin-top: 6px; font-size: 11px; padding: 2px 6px"
+                      :disabled="remuxingShotId === s.id"
+                      title="将本镜设定时长、对白字幕与小说背景音乐直接融合进此视频（无需重新排队生成画面）"
+                      @click.stop="remuxShotAudio(s)"
+                    >
+                      {{ remuxingShotId === s.id ? "融合中..." : "🎵 融合配乐与字幕" }}
+                    </button>
                   </div>
                 </div>
               </div>
@@ -1359,31 +2041,133 @@ async function runStoryboardImageOnceFromModal() {
                   <input v-model="s.shotNo" class="input small" placeholder="镜头号" />
                   <input v-model="s.shotSize" class="input" placeholder="景别" />
                   <input v-model="s.camera" class="input" placeholder="摄法" />
-                  <input
-                    v-model.number="s.durationSec"
-                    type="number"
-                    :min="SHOT_DURATION_SEC_MIN"
-                    :max="SHOT_DURATION_SEC_MAX"
-                    step="1"
-                    class="input small"
-                    :placeholder="`整秒 ${SHOT_DURATION_SEC_MIN}--${SHOT_DURATION_SEC_MAX}`"
-                    @change="clampRoundShotDuration(s)"
-                  />
+                  <div class="row" style="align-items: center; gap: 4px">
+                    <input
+                      v-model.number="s.durationSec"
+                      type="number"
+                      :min="SHOT_DURATION_SEC_MIN"
+                      :max="SHOT_DURATION_SEC_MAX"
+                      step="1"
+                      class="input small"
+                      style="width: 56px"
+                      :placeholder="`秒`"
+                      title="视频镜头时长（秒）"
+                      @change="clampRoundShotDuration(s)"
+                    />
+                    <span class="hint" style="font-size: 11px">秒</span>
+                    <button
+                      v-for="sec in [3, 5, 8, 10]"
+                      :key="sec"
+                      type="button"
+                      class="btn"
+                      :class="{ primary: s.durationSec === sec }"
+                      style="padding: 1px 6px; font-size: 11px; min-width: unset; height: 26px; line-height: 24px"
+                      :title="`快速设为 ${sec} 秒`"
+                      @click="s.durationSec = sec; clampRoundShotDuration(s)"
+                    >
+                      {{ sec }}s
+                    </button>
+                  </div>
                 </div>
               </div>
               <div>
                 <textarea v-model="s.dialogue" class="area" rows="3" placeholder="台词/旁白（可空）" />
+                <div v-if="s.dialogue?.trim()" style="font-size: 11px; color: #38bdf8; margin: 4px 0 2px 2px; display: flex; align-items: center; gap: 4px;">
+                  <span>💬 成片自动烧录对白字幕</span>
+                </div>
+                <div v-if="s.dialogue?.trim() || s.audioUrl || s.videoRefAudioUrl" class="shot-tts-actions">
+                  <span v-if="s.speaker" class="shot-speaker-badge" :title="`说话人: ${s.speaker}`">{{ s.speaker }}</span>
+                  <select v-model="s.voice" class="input shot-voice-select" title="配音音色（空则智能匹配角色或旁白）">
+                    <option value="">（智能自动音色：团团配小春，滚滚配龙硕）</option>
+                    <optgroup label="✨ CosyVoice-v2 大模型情感音色（强烈推荐）">
+                      <option value="cosyvoice-v2:longxiaochun_v2">龙小春 · 灵动萌系女童（团团首选）</option>
+                      <option value="cosyvoice-v2:longshuo_v2">龙硕 · 阳光风趣少年（滚滚首选）</option>
+                      <option value="cosyvoice-v2:longjielidou_v2">杰力豆 · 卡通幽默搞怪（滚滚卡通风）</option>
+                      <option value="cosyvoice-v2:longwan_v2">龙婉 · 温润知性抒情（旁白首选）</option>
+                      <option value="cosyvoice-v2:longmiao_v2">龙喵 · 软萌可爱萝莉</option>
+                      <option value="cosyvoice-v2:longcheng_v2">龙橙 · 磁性沉稳解说</option>
+                    </optgroup>
+                    <optgroup label="🎙️ Sambert 备选音色">
+                      <option value="sambert-zhiwei-v1">知薇 · 纯真可爱萝莉</option>
+                      <option value="sambert-zhiming-v1">知明 · 幽默风趣男声</option>
+                      <option value="sambert-zhiting-v1">知婷 · 温柔知性叙事</option>
+                      <option value="sambert-zhixiao-v1">知澖 · 活泼亲切女声</option>
+                      <option value="sambert-zhichu-v1">知厨 · 沉稳自然男声</option>
+                    </optgroup>
+                  </select>
+                  <button
+                    type="button"
+                    class="btn small shot-tts-btn"
+                    :disabled="ttsLoadingShotId === s.id"
+                    @click="onGenerateShotTts(s)"
+                  >
+                    {{ ttsLoadingShotId === s.id ? "生成中..." : (s.audioUrl || s.videoRefAudioUrl ? "🔄 重新配音" : "🔊 生成台词配音") }}
+                  </button>
+                  <audio
+                    v-if="s.audioUrl || s.videoRefAudioUrl"
+                    :src="s.audioUrl || s.videoRefAudioUrl"
+                    controls
+                    class="shot-audio-control"
+                    preload="none"
+                  />
+                </div>
                 <p v-if="shotDialogueMatchesScript(s)" class="hint script-shot-link-hint">台词见于剧本（全文匹配）</p>
-                <div class="row" style="margin-top: 8px; align-items: flex-start">
-                  <input v-model="s.music" class="input" placeholder="音乐（可空）" />
-                  <input v-model="s.sfx" class="input" placeholder="音效（可空）" />
+                <div class="row" style="margin-top: 8px; gap: 8px; align-items: center">
+                  <input v-model="s.music" class="input" style="flex: 1; min-width: 0" placeholder="背景音乐（可空，智能匹配BGM）" />
+                  <input v-model="s.sfx" class="input" style="flex: 1; min-width: 0" placeholder="音效（可空）" />
+                </div>
+                <div class="shot-bgm-toolbar" style="margin-top: 6px; display: flex; flex-direction: column; gap: 5px; background: rgba(15, 23, 42, 0.45); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 6px; padding: 6px 8px;">
+                  <div style="display: flex; align-items: center; justify-content: space-between; gap: 6px; flex-wrap: wrap;">
+                    <div style="display: flex; align-items: center; gap: 6px; min-width: 0">
+                      <span class="hint" style="font-size: 11px; color: #94a3b8; font-weight: 500; white-space: nowrap">🎵 小说情境配乐</span>
+                      <span v-if="s.music?.trim()" style="color: #38bdf8; font-size: 11px; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" :title="s.music">
+                        · {{ s.music }}
+                      </span>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                      <button
+                        type="button"
+                        class="btn small"
+                        :class="{ primary: playingBgmUrl === currentBgmUrl(s.music) }"
+                        style="padding: 1px 7px; font-size: 11px; height: 22px; line-height: 20px; color: #00f0ff"
+                        :title="playingBgmUrl === currentBgmUrl(s.music) ? '点击停止试听' : '点击试听当前匹配的背景音乐'"
+                        @click="togglePlayBgm(s.music)"
+                      >
+                        {{ playingBgmUrl === currentBgmUrl(s.music) ? "⏹ 停止试听" : "▶ 试听" }}
+                      </button>
+                      <label class="btn small" style="padding: 1px 7px; font-size: 11px; height: 22px; line-height: 20px; cursor: pointer; color: #a5b4fc" title="上传您本地的小说专属配乐（MP3/WAV）">
+                        📁 上传
+                        <input type="file" accept="audio/*" style="display: none" @change="onUploadCustomBgm(s, $event)" />
+                      </label>
+                    </div>
+                  </div>
+                  <div style="display: flex; align-items: center; gap: 5px; flex-wrap: wrap;">
+                    <button
+                      v-for="b in [
+                        { label: '🎋 竹林国风', val: '微风竹林 · 笛韵筝鸣' },
+                        { label: '🪵 萌趣日常', val: '萌趣日常 · 欢快木琴与拨弦' },
+                        { label: '🎹 治愈温情', val: '温暖治愈 · 晨光微漾钢琴' },
+                        { label: '🔍 悬疑紧迫', val: '悬疑紧迫 · 危机低吟脉冲' },
+                        { label: '🌌 星火史诗', val: '星火浩瀚 · 史诗科幻管弦' },
+                        { label: '🔮 纯真童话', val: '纯真童话 · 梦幻八音盒与竖琴' },
+                      ]"
+                      :key="b.label"
+                      type="button"
+                      class="btn small"
+                      :class="{ primary: s.music?.includes(b.val.slice(0, 4)) }"
+                      style="padding: 1px 6px; font-size: 11px; height: 22px; line-height: 20px; border-radius: 4px;"
+                      @click="s.music = b.val"
+                    >
+                      {{ b.label }}
+                    </button>
+                  </div>
                 </div>
                 <input v-model="s.note" class="input" placeholder="备注（可空）" style="margin-top: 8px" />
                 <textarea
                   v-model="s.prompt"
                   class="area"
                   rows="2"
-                  placeholder="兼容字段 prompt（可留空）"
+                  placeholder="分镜提示词 prompt（可留空，填写则补充注入生图）"
                   style="margin-top: 8px"
                 />
               </div>
@@ -1443,9 +2227,10 @@ async function runStoryboardImageOnceFromModal() {
                           pipeline.videoExtraAttachPopover.visible && pipeline.videoExtraAttachPopover.shotId === s.id,
                       }"
                       :disabled="!assetsSelectableForVideoExtra(s).length"
+                      title="手动为本镜头附加指定资产引用（分镜生图与视频通用）"
                       @click.stop="pipeline.toggleVideoExtraAttachPopover(s, $event)"
                     >
-                      附加到本镜视频
+                      附加资产引用
                       <span v-if="assetsSelectableForVideoExtra(s).length" class="storyboard-extra-asset-open-count">{{
                         assetsSelectableForVideoExtra(s).length
                       }}</span>
@@ -1503,6 +2288,17 @@ async function runStoryboardImageOnceFromModal() {
                       <video class="video-preview-tap__thumb" :src="j.resultUrl" muted playsinline preload="metadata" />
                       <span class="video-preview-tap__hint">> 居中播放</span>
                     </div>
+                    <button
+                      v-if="j.resultUrl && pipeline.isLikelyVideoResultUrl(j.resultUrl)"
+                      type="button"
+                      class="btn small primary"
+                      style="width: 100%; margin-top: 6px; font-size: 11px; padding: 2px 6px"
+                      :disabled="remuxingShotId === s.id"
+                      title="将本镜设定时长、对白字幕与小说背景音乐直接融合进此视频（无需重新排队生成画面）"
+                      @click.stop="remuxShotAudio(s)"
+                    >
+                      {{ remuxingShotId === s.id ? "融合中..." : "🎵 融合配乐与字幕" }}
+                    </button>
                   </div>
                 </div>
               </div>
@@ -1517,6 +2313,7 @@ async function runStoryboardImageOnceFromModal() {
                 top: `${pipeline.storyboardRowContextMenu.y}px`,
               }"
               @click.stop
+              @contextmenu.stop.prevent
             >
               <button
                 type="button"
@@ -1529,6 +2326,25 @@ async function runStoryboardImageOnceFromModal() {
                     ? "分镜图生成中..."
                     : "生成分镜图"
                 }}
+              </button>
+              <button
+                v-if="contextMenuShotImages.length"
+                type="button"
+                class="chapter-context-item danger"
+                @click="onStoryboardRowMenuAction('delete-image')"
+              >
+                {{ pipeline.storyboardRowContextMenu.targetImageUrl ? "删除此分镜图" : "删除分镜图" }}
+              </button>
+              <button
+                v-if="contextMenuShotImages.length > 1 && pipeline.storyboardRowContextMenu.targetImageUrl"
+                type="button"
+                class="chapter-context-item danger"
+                @click="onStoryboardRowMenuAction('delete-all-images')"
+              >
+                删除该镜所有版本分镜图
+              </button>
+              <button type="button" class="chapter-context-item" @click="onStoryboardRowMenuAction('attach-assets')">
+                🔗 附加资产引用...
               </button>
               <button type="button" class="chapter-context-item" @click="onStoryboardRowMenuAction('image-prompt')">
                 分镜图提示词...
@@ -1576,66 +2392,81 @@ async function runStoryboardImageOnceFromModal() {
               </button>
             </div>
           </Teleport>
-          <div
-            v-if="pipeline.videoExtraAttachPopover.visible && pipeline.videoExtraPopoverShot"
-            class="video-extra-attach-popover"
-            :style="{
-              left: `${pipeline.videoExtraAttachPopover.x}px`,
-              top: `${pipeline.videoExtraAttachPopover.y}px`,
-              width: `${VIDEO_EXTRA_POPOVER_W}px`,
-            }"
-            role="dialog"
-            aria-label="附加资产到本镜视频"
-            @click.stop
-          >
-            <div class="video-extra-attach-popover-inner">
-              <div class="video-extra-attach-cats" role="tablist" aria-label="资产分类">
+          <Teleport to="body">
+            <div
+              v-if="pipeline.videoExtraAttachPopover.visible && pipeline.videoExtraPopoverShot"
+              class="video-extra-attach-popover"
+              :style="{
+                left: `${pipeline.videoExtraAttachPopover.x}px`,
+                top: `${pipeline.videoExtraAttachPopover.y}px`,
+                width: `${VIDEO_EXTRA_POPOVER_W}px`,
+              }"
+              role="dialog"
+              aria-label="附加资产到本镜"
+              @click.stop
+            >
+              <div class="video-extra-attach-header">
+                <span class="video-extra-attach-title">
+                  附加资产引用（分镜生图与视频通用） | 镜头 #{{ pipeline.videoExtraPopoverShot.index }}
+                </span>
                 <button
-                  v-for="tab in pipeline.ASSET_FILTER_TABS"
-                  :key="'vep-pop-' + tab.key"
                   type="button"
-                  class="video-extra-attach-cat"
-                  :class="{ active: pipeline.getVideoExtraPickerTab(pipeline.videoExtraPopoverShot.id) === tab.key }"
-                  role="tab"
-                  @click="pipeline.setVideoExtraPickerTab(pipeline.videoExtraPopoverShot!.id, tab.key)"
+                  class="btn-close-compact"
+                  title="关闭"
+                  @click="pipeline.closeVideoExtraAttachPopover"
                 >
-                  <span class="video-extra-attach-cat-label">{{ tab.label }}</span>
-                  <span class="asset-subtab-count">{{
-                    videoExtraPickerTabCount(pipeline.videoExtraPopoverShot, tab.key)
-                  }}</span>
+                  ✕
                 </button>
               </div>
-              <div class="video-extra-attach-panel">
-                <input
-                  type="search"
-                  class="input video-extra-attach-search"
-                  placeholder="搜索名称、别名、key、prompt..."
-                  :value="pipeline.getVideoExtraPickerQuery(pipeline.videoExtraPopoverShot.id)"
-                  @input="
-                    pipeline.setVideoExtraPickerQuery(
-                      pipeline.videoExtraPopoverShot!.id,
-                      ($event.target as HTMLInputElement).value,
-                    )
-                  "
-                />
-                <div class="video-extra-attach-list">
+              <div class="video-extra-attach-popover-inner">
+                <div class="video-extra-attach-cats" role="tablist" aria-label="资产分类">
                   <button
-                    v-for="opt in videoExtraPopoverFilteredAssets"
-                    :key="opt.id"
+                    v-for="tab in pipeline.ASSET_FILTER_TABS"
+                    :key="'vep-pop-' + tab.key"
                     type="button"
-                    class="video-extra-attach-item"
-                    @click="pickVideoExtraAssetForShot(pipeline.videoExtraPopoverShot!, opt.id)"
+                    class="video-extra-attach-cat"
+                    :class="{ active: pipeline.getVideoExtraPickerTab(pipeline.videoExtraPopoverShot.id) === tab.key }"
+                    role="tab"
+                    @click="pipeline.setVideoExtraPickerTab(pipeline.videoExtraPopoverShot!.id, tab.key)"
                   >
-                    <span class="seai-type">{{ pipeline.assetTypeChipLabel(opt.type) }}</span>
-                    <span class="seai-name">{{ opt.name }}</span>
+                    <span class="video-extra-attach-cat-label">{{ tab.label }}</span>
+                    <span class="asset-subtab-count">{{
+                      videoExtraPickerTabCount(pipeline.videoExtraPopoverShot, tab.key)
+                    }}</span>
                   </button>
                 </div>
-                <p v-if="!videoExtraPopoverFilteredAssets.length" class="hint video-extra-attach-empty">
-                  当前分类/搜索下无可附加（或已全部加入本镜）
-                </p>
+                <div class="video-extra-attach-panel">
+                  <input
+                    type="search"
+                    class="input video-extra-attach-search"
+                    placeholder="搜索名称、别名、key、prompt..."
+                    :value="pipeline.getVideoExtraPickerQuery(pipeline.videoExtraPopoverShot.id)"
+                    @input="
+                      pipeline.setVideoExtraPickerQuery(
+                        pipeline.videoExtraPopoverShot!.id,
+                        ($event.target as HTMLInputElement).value,
+                      )
+                    "
+                  />
+                  <div class="video-extra-attach-list">
+                    <button
+                      v-for="opt in videoExtraPopoverFilteredAssets"
+                      :key="opt.id"
+                      type="button"
+                      class="video-extra-attach-item"
+                      @click="pickVideoExtraAssetForShot(pipeline.videoExtraPopoverShot!, opt.id)"
+                    >
+                      <span class="seai-type">{{ pipeline.assetTypeChipLabel(opt.type) }}</span>
+                      <span class="seai-name">{{ opt.name }}</span>
+                    </button>
+                  </div>
+                  <p v-if="!videoExtraPopoverFilteredAssets.length" class="hint video-extra-attach-empty">
+                    当前分类/搜索下无可附加（或已全部加入本镜）
+                  </p>
+                </div>
               </div>
             </div>
-          </div>
+          </Teleport>
         </div>
         <p v-if="!projectsStore.selected.storyboards.length" class="hint">暂无分镜，可点击"新增分镜"。</p>
       </div>
@@ -1653,25 +2484,88 @@ async function runStoryboardImageOnceFromModal() {
             <h3 style="margin: 0">视频提示词 | 镜头 #{{ pipeline.storyboardVideoModalShot.index }}</h3>
             <button type="button" class="btn" @click="closeStoryboardVideoPromptModal">关闭</button>
           </div>
-          <p class="hint" style="margin-top: 10px">基底提示词（可编辑，对应 videoPrompt）。留空则由服务端自动拼接。</p>
+          <p class="hint" style="margin-top: 10px">
+            基底提示词（已自动填入当前镜头分镜内容，可直接编辑调整；对应 videoPrompt）。留空则由服务端自动拼接。
+          </p>
+          <div class="row" style="align-items: center; gap: 8px; margin-top: 10px; padding: 8px 12px; background: rgba(0,0,0,0.2); border: 1px solid var(--color-border); border-radius: 6px">
+            <span class="hint" style="font-weight: 600; color: var(--color-text)">⏱ 调整视频时长：</span>
+            <input
+              v-model.number="pipeline.storyboardVideoDraftDuration"
+              type="number"
+              :min="SHOT_DURATION_SEC_MIN"
+              :max="SHOT_DURATION_SEC_MAX"
+              step="1"
+              class="input small"
+              style="width: 60px"
+              @change="clampRoundDraftVideoDuration()"
+            />
+            <span class="hint">秒</span>
+            <div class="row" style="gap: 6px; margin-left: 6px">
+              <button
+                v-for="sec in [3, 5, 10]"
+                :key="sec"
+                type="button"
+                class="btn small"
+                :class="{ primary: pipeline.storyboardVideoDraftDuration === sec }"
+                style="padding: 2px 8px; font-size: 12px"
+                @click="setDraftVideoDuration(sec)"
+              >
+                {{ sec }}秒
+              </button>
+            </div>
+            <span class="hint" style="margin-left: auto; font-size: 12px">
+              💡 阿里百炼Wanx 2.1建议5s；火山方舟Seedance/可灵支持5s或10s
+            </span>
+          </div>
           <p v-if="pipeline.storyboardVideoDurationApiHint" class="hint" style="margin-top: 8px">
             {{ pipeline.storyboardVideoDurationApiHint }}
           </p>
-          <label class="field block" style="margin-top: 12px">
-            <span class="hint">基底提示词</span>
+          <div class="field block" style="margin-top: 12px">
+            <div class="row spread" style="align-items: center; margin-bottom: 6px">
+              <span class="hint" style="font-weight: 600; color: var(--color-text)">基底提示词</span>
+              <div class="row" style="gap: 8px">
+                <button
+                  type="button"
+                  class="btn"
+                  style="padding: 2px 10px; font-size: 12px; color: var(--color-primary-active)"
+                  title="智能丰富电影级运镜、动态细节与微表情"
+                  @click="enrichVideoDraftPrompt"
+                >
+                  ✨ 丰富电影级动态
+                </button>
+                <button
+                  type="button"
+                  class="btn"
+                  style="padding: 2px 10px; font-size: 12px"
+                  title="重新载入由分镜内容自动生成的默认视频基底"
+                  @click="resetToDefaultVideoBase"
+                >
+                  恢复默认基底
+                </button>
+                <button
+                  type="button"
+                  class="btn"
+                  style="padding: 2px 10px; font-size: 12px"
+                  title="清空后将由服务端全自动拼接"
+                  @click="pipeline.storyboardVideoDraftPrompt = ''"
+                >
+                  清空
+                </button>
+              </div>
+            </div>
             <textarea
               v-model="pipeline.storyboardVideoDraftPrompt"
               class="area"
               rows="8"
-              placeholder="留空则用分镜自动拼接"
+              placeholder="镜头动态与画面基底描述（如：镜头 1：首帧：... 镜内动态与神态：... 尾帧：...）"
             ></textarea>
-          </label>
+          </div>
           <div class="row" style="margin-top: 10px; flex-wrap: wrap; gap: 8px">
             <button
               type="button"
               class="btn"
               :disabled="pipeline.storyboardVideoPreviewLoading"
-              @click="refreshStoryboardVideoPreview"
+              @click="refreshStoryboardVideoPreview(false)"
             >
               {{ pipeline.storyboardVideoPreviewLoading ? "预览加载中..." : "刷新预览" }}
             </button>
@@ -1769,23 +2663,54 @@ async function runStoryboardImageOnceFromModal() {
             <button type="button" class="btn" @click="closeStoryboardImagePromptModal">关闭</button>
           </div>
           <p class="hint" style="margin-top: 10px">
-            基底画面描述（可编辑，对应 imagePrompt）。留空则由服务端自动拼接。
+            基底画面描述（已自动填入当前镜头画面，可直接编辑调整；对应 imagePrompt）。留空则由服务端自动拼接。
           </p>
-          <label class="field block" style="margin-top: 12px">
-            <span class="hint">基底提示词</span>
+          <div class="field block" style="margin-top: 12px">
+            <div class="row spread" style="align-items: center; margin-bottom: 6px">
+              <span class="hint" style="font-weight: 600; color: var(--color-text)">基底提示词</span>
+              <div class="row" style="gap: 8px">
+                <button
+                  type="button"
+                  class="btn"
+                  style="padding: 2px 10px; font-size: 12px; color: var(--color-primary-active)"
+                  title="智能丰富微表情、光影与电影质感提示词"
+                  @click="enrichImageDraftPrompt"
+                >
+                  ✨ 丰富光影质感
+                </button>
+                <button
+                  type="button"
+                  class="btn"
+                  style="padding: 2px 10px; font-size: 12px"
+                  title="重新载入分镜内容自动生成的默认基底"
+                  @click="resetToDefaultImageBase"
+                >
+                  恢复默认基底
+                </button>
+                <button
+                  type="button"
+                  class="btn"
+                  style="padding: 2px 10px; font-size: 12px"
+                  title="清空后将由服务端全自动拼接"
+                  @click="pipeline.storyboardImageDraftPrompt = ''"
+                >
+                  清空
+                </button>
+              </div>
+            </div>
             <textarea
               v-model="pipeline.storyboardImageDraftPrompt"
               class="area"
               rows="8"
-              placeholder="单帧起始画面"
+              placeholder="单帧起始画面基底描述（如：镜头 7：团团战战兢兢睁开一条眼缝。景别：特写；摄法：仰拍）"
             ></textarea>
-          </label>
+          </div>
           <div class="row" style="margin-top: 10px; flex-wrap: wrap; gap: 8px">
             <button
               type="button"
               class="btn"
               :disabled="pipeline.storyboardImagePreviewLoading"
-              @click="refreshStoryboardImagePreview"
+              @click="refreshStoryboardImagePreview(false)"
             >
               {{ pipeline.storyboardImagePreviewLoading ? "预览加载中..." : "刷新预览" }}
             </button>
@@ -1808,6 +2733,44 @@ async function runStoryboardImageOnceFromModal() {
             >
               立即生图（直跑）
             </button>
+          </div>
+          <div class="field block" style="margin-top: 14px; background: rgba(15, 23, 42, 0.45); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 10px 12px;">
+            <div class="row spread" style="align-items: center; margin-bottom: 8px">
+              <div style="display: flex; align-items: center; gap: 8px">
+                <span style="font-weight: 600; font-size: 13px; color: var(--color-text)">🎨 本分镜引用资产</span>
+                <span class="hint" style="font-size: 12px">（勾选的资产作为视觉锚定图与核心设定注入生图）</span>
+              </div>
+              <button
+                type="button"
+                class="btn small primary"
+                style="padding: 2px 10px; font-size: 12px"
+                @click="openAssetAttachFromModal($event)"
+              >
+                + 增减附加资产
+              </button>
+            </div>
+            <div v-if="modalAttachedAssets.length" class="row" style="gap: 6px; flex-wrap: wrap">
+              <span
+                v-for="a in modalAttachedAssets"
+                :key="a.id"
+                class="storyboard-asset-chip-wrap storyboard-asset-chip-wrap--manual"
+                style="display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; background: rgba(56, 189, 248, 0.15); border: 1px solid rgba(56, 189, 248, 0.4); border-radius: 4px; font-size: 12px"
+              >
+                <span style="color: #38bdf8; font-weight: 500">[{{ pipeline.assetTypeChipLabel(a.type) }}]</span>
+                <span>{{ a.name }}</span>
+                <span v-if="a.imageUrl" style="color: #4ade80; font-size: 11px">（已有参考图）</span>
+                <span v-else style="color: #f87171; font-size: 11px">（无图，可去资产页上传）</span>
+                <button
+                  type="button"
+                  style="background: none; border: none; color: #94a3b8; cursor: pointer; padding: 0 2px; font-size: 14px; line-height: 1"
+                  title="移除本镜对此资产的引用"
+                  @click="removeAssetFromModalShot(a.id)"
+                >×</button>
+              </span>
+            </div>
+            <p v-else class="hint" style="margin: 0; font-size: 12px">
+              暂无手动附加资产。点击右上角「+ 增减附加资产」即可勾选本分镜要引用的角色、场景或道具。
+            </p>
           </div>
           <div v-if="pipeline.storyboardImagePreviewMatched.length" class="hint" style="margin-top: 12px">
             匹配资产：<span v-for="(a, i) in pipeline.storyboardImagePreviewMatched" :key="a.id"

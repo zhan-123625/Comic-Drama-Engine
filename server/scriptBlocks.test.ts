@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { alignBodiesToChapters, joinChapterScriptBodies, splitScriptBlocks } from "./scriptBlocks";
+import { alignBodiesToChapters, joinChapterScriptBodies, splitScriptBlocks } from "./scriptBlocks.js";
 
 // ── splitScriptBlocks ──
 

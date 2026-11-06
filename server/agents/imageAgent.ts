@@ -34,10 +34,11 @@ async function resolveRefPayloadForImageModel(
   const u = rawUrl?.trim();
   if (!u) return undefined;
   if (/^https?:\/\//i.test(u)) return u;
-  const pub = toPublicAssetUrl(u);
+  const cleanPath = u.split("?")[0]!.split("#")[0]!;
+  const pub = toPublicAssetUrl(cleanPath);
   if (pub && !isLikelyLocalHostUrl(pub)) return pub;
-  if (u.startsWith("/api/files/") || /^\/api\/projects\/[^/]+\/shots\/[^/]+\/image$/i.test(u)) {
-    return (await readLocalProjectImageUrlAsDataUrl(project.id, u)) ?? undefined;
+  if (cleanPath.startsWith("/api/files/") || /^\/api\/projects\/[^/]+\/shots\/[^/]+\/image$/i.test(cleanPath)) {
+    return (await readLocalProjectImageUrlAsDataUrl(project.id, cleanPath)) ?? undefined;
   }
   return undefined;
 }
@@ -90,18 +91,26 @@ export async function collectStoryboardImageReferenceDetails(
   };
 
   const ordered = orderedAssetsForStoryboardVisual(project, shot);
+
   for (const a of ordered) {
-    if (apiImageUrls.length >= max) break;
+    const local = a.imageUrl?.trim();
     const remote = a.remoteImageUrl?.trim();
     let resolved: string | undefined;
-    let storageUrl: string;
-    if (remote && /^https?:\/\//i.test(remote)) {
+    let storageUrl: string = local || remote || "(无本地路径)";
+
+    // 1. 优先读取本地磁盘图片转换为 Data URL（绝不过期，避免阿里云 OSS 临时带签名的 remoteImageUrl 超时 403 导致生图失效）
+    if (local) {
+      resolved = await resolveRefPayloadForImageModel(project, local);
+      if (resolved) {
+        storageUrl = local;
+      }
+    }
+    // 2. 本地不存在或解析失败时，再使用远程 URL 兜底
+    if (!resolved && remote && /^https?:\/\//i.test(remote)) {
       storageUrl = remote;
       resolved = remote;
-    } else {
-      storageUrl = (a.imageUrl?.trim() || a.remoteImageUrl?.trim() || "").trim() || "(无本地路径)";
-      resolved = await resolveRefPayloadForImageModel(project, a.imageUrl?.trim());
     }
+
     if (!resolved) {
       referenceSlots.push({
         role: "asset",
@@ -140,9 +149,17 @@ export async function collectStoryboardImageReferenceDetails(
         for (let j = i - 1; j >= 0; j--) {
           const prev = orderedShots[j]!;
           if (prev.sceneNo !== sn) break;
-          const payload = await resolveRefPayloadForImageModel(project, prev.imageUrl);
+          const prevLocal = prev.imageUrl?.trim();
+          const prevRemote = prev.remoteImageUrl?.trim();
+          let payload: string | undefined;
+          if (prevLocal) {
+            payload = await resolveRefPayloadForImageModel(project, prevLocal);
+          }
+          if (!payload && prevRemote && /^https?:\/\//i.test(prevRemote)) {
+            payload = prevRemote;
+          }
           if (payload) {
-            const storageUrl = prev.imageUrl?.trim() || `镜头 #${prev.index}`;
+            const storageUrl = prevLocal || prevRemote || `镜头 #${prev.index}`;
             const inApi = tryAdd(payload);
             const { resolvedUrl, resolvedUrlPreview } = previewFieldsForResolved(payload);
             referenceSlots.push({
@@ -188,6 +205,10 @@ export async function runImageAgentForStoryboardShot(
     imageCfg?: ImageProviderConfig;
     /** 显式指定参考图列表（覆盖自动匹配的多图） */
     referenceImageUrlsOverride?: string[];
+    /** 参考图强度（DashScope wanx 等模型支持） */
+    refStrength?: number;
+    /** 提示词自动扩写开关 */
+    promptExtend?: boolean;
   },
 ): Promise<GenerateImageResult> {
   const cfg = await readConfig();
@@ -211,5 +232,7 @@ export async function runImageAgentForStoryboardShot(
     size,
     prompt,
     referenceDataUrls: referenceDataUrls.length ? referenceDataUrls : undefined,
+    refStrength: opts?.refStrength,
+    promptExtend: opts?.promptExtend,
   });
 }

@@ -15,6 +15,7 @@ import {
 import { getVideoBasePromptForShot } from "./videoShotPrompt.js";
 import { resolveReferencedAssetsForVideo } from "./videoReferencedAssets.js";
 import { shotVideoRunModeBlockingReason } from "./videoRunMode.js";
+import { tryMuxAudioIntoVideo } from "./ttsService.js";
 import type { Project } from "./types.js";
 
 export type RunVideoOnceResult =
@@ -142,6 +143,8 @@ export async function runVideoOnceForShot(params: {
       runMode: enriched.runMode,
     });
     const storedVideoUrl = await persistGeneratedVideoUrl(id, jobId, url);
+    const muxResult = await tryMuxAudioIntoVideo(id, shot.id, storedVideoUrl);
+    const finalVideoUrl = muxResult.videoUrl;
     const latest = await store.get(id);
     if (latest) {
       const idx = latest.videoJobs.findIndex((j) => j.id === jobId);
@@ -149,8 +152,8 @@ export async function runVideoOnceForShot(params: {
         latest.videoJobs[idx] = {
           ...latest.videoJobs[idx]!,
           status: "done",
-          message: "视频生成完成",
-          resultUrl: storedVideoUrl,
+          message: muxResult.muxed ? "视频生成完成（已合成台词音轨）" : "视频生成完成",
+          resultUrl: finalVideoUrl,
           modelApiCall,
         };
         await store.save(latest);
@@ -163,9 +166,10 @@ export async function runVideoOnceForShot(params: {
         shotId: shot.id,
         shotIndex: shot.index,
         matchedAssets: enriched.matchedAssets.length,
-        resultUrl: storedVideoUrl.slice(0, 180),
+        resultUrl: finalVideoUrl.slice(0, 180),
+        audioMuxed: muxResult.muxed,
       });
-      return { kind: "ok", project: latest, resultUrl: storedVideoUrl };
+      return { kind: "ok", project: latest, resultUrl: finalVideoUrl };
     }
     return { kind: "fail", status: 500, error: "project not found after run-once" };
   } catch (e) {

@@ -4,6 +4,7 @@ import { formatErrorMessage } from "../errorFormat.js";
 import { logger } from "../logger.js";
 import { redactRequestHeaders, sanitizeModelRequestBody } from "../modelRequestSnapshot.js";
 import type { ModelApiCallSnapshot } from "../types.js";
+import type { GenerateImageResult } from "../imagePersist.js";
 import { sleep } from "../utils/sleep.js";
 import { compositeReferenceImages } from "../utils/compositeImages.js";
 
@@ -286,14 +287,102 @@ function isDashScopeImage(baseUrl: string): boolean {
   return baseUrl.includes("dashscope.aliyuncs.com");
 }
 
+export async function uploadDashScopeImageOss(
+  apiKey: string,
+  model: string,
+  buffer: Buffer,
+  filename = "ref.png",
+  mime = "image/png",
+): Promise<string> {
+  const cleanKey = apiKey.trim();
+  // 1. Try native DashScope upload policy HTTP API
+  try {
+    const certUrl = `https://dashscope.aliyuncs.com/api/v1/uploads?action=getPolicy&model=${encodeURIComponent(model)}`;
+    const certRes = await httpFetch(certUrl, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${cleanKey}`,
+      },
+    });
+    if (certRes.ok) {
+      const certJson = (await certRes.json()) as any;
+      const cert = certJson?.data;
+      if (cert && cert.upload_host && cert.upload_dir) {
+        const ossKey = `${cert.upload_dir}/${filename}`;
+        const form = new FormData();
+        form.append("OSSAccessKeyId", cert.oss_access_key_id);
+        form.append("Signature", cert.signature);
+        form.append("policy", cert.policy);
+        form.append("key", ossKey);
+        form.append("x-oss-object-acl", cert.x_oss_object_acl);
+        form.append("x-oss-forbid-overwrite", cert.x_oss_forbid_overwrite);
+        form.append("success_action_status", "200");
+        form.append("Content-Type", mime);
+        form.append("x-oss-content-type", mime);
+        form.append("file", new Blob([new Uint8Array(buffer)], { type: mime }), filename);
+
+        const upRes = await fetch(cert.upload_host, {
+          method: "POST",
+          body: form,
+        });
+        if (upRes.ok) {
+          const ossUrl = `oss://${ossKey}`;
+          logger.info("dashscope image reference uploaded to oss via native api", { ossUrl });
+          return ossUrl;
+        }
+      }
+    }
+  } catch (e) {
+    logger.warn("dashscope native image oss upload failed", { err: String(e) });
+  }
+
+  // 2. Fallback to python check_and_upload_local if available
+  try {
+    const os = await import("os");
+    const fs = await import("fs");
+    const path = await import("path");
+    const { execFile } = await import("child_process");
+    const { promisify } = await import("util");
+    const execFileAsync = promisify(execFile);
+    const tmpFile = path.join(os.tmpdir(), `ds_img_ref_${Date.now()}_${filename}`);
+    fs.writeFileSync(tmpFile, buffer);
+    try {
+      const pyScript =
+        "import sys\nfrom dashscope.utils.oss_utils import check_and_upload_local\nis_up, url, cert = check_and_upload_local(sys.argv[1], sys.argv[2], sys.argv[3])\nprint(url)\n";
+      const { stdout } = await execFileAsync("python", ["-c", pyScript, model, tmpFile, cleanKey]);
+      const ossUrl = stdout.trim();
+      if (ossUrl.startsWith("oss://")) {
+        logger.info("dashscope image reference uploaded to oss via python", { ossUrl });
+        return ossUrl;
+      }
+    } finally {
+      try {
+        fs.unlinkSync(tmpFile);
+      } catch {
+        /* ignore */
+      }
+    }
+  } catch (pyErr) {
+    logger.warn("dashscope python oss upload for image failed", { err: String(pyErr) });
+  }
+
+  return "";
+}
+
 async function generateImageDashScope(opts: {
   apiKey: string;
   model: string;
   prompt: string;
   size: string;
   referenceDataUrls?: string[];
-}): Promise<{ url?: string; b64_json?: string; modelApiCall?: ModelApiCallSnapshot }> {
-  const model = opts.model === "qwen-image" ? "wanx2.1-t2i-turbo" : opts.model;
+  refStrength?: number;
+  promptExtend?: boolean;
+}): Promise<GenerateImageResult> {
+  let model = opts.model.trim();
+  if (model === "qwen-image") {
+    model = "wanx2.1-t2i-plus";
+  }
+
   const dsSize = toDashScopeImageSize(opts.size);
   const createEndpoint = "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis";
   const reqHeaders: Record<string, string> = {
@@ -305,16 +394,37 @@ async function generateImageDashScope(opts: {
   let resolvedPrompt = opts.prompt;
   let refImg: string | undefined;
 
+  // 无论模型是 wanx2.1 系列还是 wanx-v1，只要有参考图均通过 DashScope OSS 上传作为 ref_img 垫图注入
   if (opts.referenceDataUrls?.length) {
-    refImg = await compositeReferenceImages(opts.referenceDataUrls);
-    if (refImg) {
-      logger.info("attached reference image(s) to DashScope image synthesis", {
-        model,
-        inputImageCount: opts.referenceDataUrls.length,
-        isComposited: opts.referenceDataUrls.length > 1,
-      });
-      resolvedPrompt +=
-        "\n\n【多图视觉参考说明】：上方已提供本分镜关联的关键角色设定与场景环境参考图。请严格以参考图中的角色相貌、五官发型、体型服饰与场景环境为视觉依据，确保画面中的角色外貌与设定图高度一致。";
+    const composited = await compositeReferenceImages(opts.referenceDataUrls);
+    if (composited) {
+      if (composited.startsWith("data:")) {
+        const m = composited.match(/^data:([^;]+);base64,(.+)$/i);
+        if (m && m[2]) {
+          const buf = Buffer.from(m[2], "base64");
+          const ossUrl = await uploadDashScopeImageOss(opts.apiKey, model, buf, "ref_composite.png", m[1] || "image/png");
+          if (ossUrl) {
+            refImg = ossUrl;
+          }
+        }
+      } else if (
+        composited.startsWith("http://") ||
+        composited.startsWith("https://") ||
+        composited.startsWith("oss://")
+      ) {
+        refImg = composited;
+      }
+
+      if (refImg) {
+        logger.info("attached reference image to DashScope image synthesis", {
+          model,
+          inputImageCount: opts.referenceDataUrls.length,
+          refImg: refImg.startsWith("oss://") ? refImg : refImg.slice(0, 80),
+        });
+        resolvedPrompt =
+          "【参考图视觉锚定】：已提供出镜主体视觉参考图。请依据参考图保持角色的五官相貌、体态服饰、发型与关键道具特征一致。严禁照抄参考图的三视图（正面/侧面/背面）排版、纯色白底背景或多图拼贴！必须严格绘制出具体的自然环境背景与生动的剧情画面！\n\n" +
+          resolvedPrompt;
+      }
     }
   }
 
@@ -323,6 +433,9 @@ async function generateImageDashScope(opts: {
   };
   if (refImg) {
     input.ref_img = refImg;
+    if (refImg.startsWith("oss://")) {
+      reqHeaders["X-DashScope-OssResourceResolve"] = "enable";
+    }
   }
 
   const parameters: Record<string, unknown> = {
@@ -330,7 +443,24 @@ async function generateImageDashScope(opts: {
     n: 1,
   };
   if (refImg) {
-    parameters.ref_strength = 0.65;
+    const envStrength = Number(process.env.MY_APP_WANX_REF_STRENGTH);
+    const resolvedStrength =
+      typeof opts.refStrength === "number" && Number.isFinite(opts.refStrength)
+        ? Math.min(Math.max(opts.refStrength, 0), 1)
+        : Number.isFinite(envStrength) && envStrength >= 0 && envStrength <= 1
+          ? envStrength
+          : 1.0;
+    parameters.ref_strength = resolvedStrength;
+    parameters.ref_mode = "refonly";
+
+    const envExtend = process.env.MY_APP_WANX_PROMPT_EXTEND;
+    const resolvedExtend =
+      typeof opts.promptExtend === "boolean"
+        ? opts.promptExtend
+        : envExtend !== undefined
+          ? envExtend === "true" || envExtend === "1"
+          : false;
+    parameters.prompt_extend = resolvedExtend;
   }
 
   const bodyUsed = {
@@ -339,7 +469,7 @@ async function generateImageDashScope(opts: {
     parameters,
   };
 
-  logger.info("submitting DashScope image synthesis task", { model, size: dsSize });
+  logger.info("submitting DashScope image synthesis task", { model, size: dsSize, hasRefImg: Boolean(refImg) });
   let r: UndiciHttpResponse;
   try {
     r = await httpFetch(createEndpoint, {
@@ -396,7 +526,7 @@ async function generateImageDashScope(opts: {
       if (!url) throw new Error("通义万相任务已完成，但未返回图片 URL");
       logger.info("DashScope image synthesis succeeded", { model, taskId, durationPolls: poll });
       const modelApiCall = snapshotImageCall(createEndpoint, bodyUsed, reqHeaders);
-      return { url, modelApiCall };
+      return { kind: "url" as const, url, modelApiCall };
     }
 
     if (status === "FAILED") {
@@ -421,6 +551,8 @@ export async function generateImage(opts: {
    * 分镜生图会将匹配资产的本地 `/api/files/...`、分镜图 `/api/projects/.../shots/.../image` 读成 data URL 一并提交。
    */
   referenceDataUrls?: string[];
+  refStrength?: number;
+  promptExtend?: boolean;
 }) {
   const baseUrl = must(opts.baseUrl, "image.baseUrl");
   const apiKey = must(opts.apiKey, "image.apiKey");
@@ -435,6 +567,8 @@ export async function generateImage(opts: {
       prompt: opts.prompt,
       size: requestedSize,
       referenceDataUrls: opts.referenceDataUrls,
+      refStrength: opts.refStrength,
+      promptExtend: opts.promptExtend,
     });
   }
 
@@ -462,6 +596,18 @@ export async function generateImage(opts: {
     return /at least\s+3686400\s+pixels/i.test(msg);
   }
 
+  let referenceDataUrls = opts.referenceDataUrls;
+  if (referenceDataUrls && referenceDataUrls.length > 1) {
+    try {
+      const composited = await compositeReferenceImages(referenceDataUrls);
+      if (composited) {
+        referenceDataUrls = [composited];
+      }
+    } catch (compErr) {
+      logger.warn("failed to composite reference images for openai-compat image model", { err: String(compErr) });
+    }
+  }
+
   const t0 = debugLlm ? performance.now() : 0;
   let size: string = requestedSize;
   const imageEndpoint = resolveEndpointUrl(baseUrl, "/images/generations");
@@ -469,7 +615,13 @@ export async function generateImage(opts: {
     "Content-Type": "application/json",
     Authorization: `Bearer ${apiKey}`,
   };
-  let bodyUsed = buildImageGenerationBody(model, opts.prompt, size, opts.referenceDataUrls);
+  let resolvedPrompt = opts.prompt;
+  if (referenceDataUrls?.length && !resolvedPrompt.includes("【参考图视觉锚定")) {
+    resolvedPrompt =
+      "【参考图视觉锚定（最高准则）】：已提供出镜主体视觉参考图。请依据参考图保持角色的物种外形、五官相貌、体态服饰与关键道具特征完全一致，严禁擅自改变主体形象！\n\n" +
+      resolvedPrompt;
+  }
+  let bodyUsed = buildImageGenerationBody(model, resolvedPrompt, size, referenceDataUrls);
   let r: UndiciHttpResponse;
   try {
     r = await httpFetch(imageEndpoint, {
@@ -499,7 +651,7 @@ export async function generateImage(opts: {
           newSize: upgraded,
         });
         size = upgraded;
-        bodyUsed = buildImageGenerationBody(model, opts.prompt, size, opts.referenceDataUrls);
+        bodyUsed = buildImageGenerationBody(model, opts.prompt, size, referenceDataUrls);
         try {
           r = await httpFetch(imageEndpoint, {
             method: "POST",

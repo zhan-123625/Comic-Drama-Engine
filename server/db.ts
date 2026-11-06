@@ -207,6 +207,8 @@ export function migrateStoryboardColumns(d: AppDb) {
   addColumnIfMissing(d, "storyboard_shots", "last_frame_remote_url TEXT");
   addColumnIfMissing(d, "storyboard_shots", "video_ref_audio_url TEXT");
   addColumnIfMissing(d, "storyboard_shots", "video_ref_video_url TEXT");
+  addColumnIfMissing(d, "storyboard_shots", "tts_voice TEXT");
+  addColumnIfMissing(d, "storyboard_shots", "tts_speaker TEXT");
 }
 
 /** 旧库补列：任务类型（video/image）、模型调用快照 JSON */

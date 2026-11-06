@@ -7,6 +7,7 @@ import { dataDir, getDb } from "../db.js";
 
 const undiciAgent = new Agent({ connectTimeout: 60_000, headersTimeout: 600_000 });
 const execFileAsync = promisify(execFile);
+type UndiciResponse = Awaited<ReturnType<typeof undiciFetch>>;
 import type { ArkVideoRatio, VideoProviderConfig } from "../config.js";
 import {
   dataImageUrlDecodedApproxBytes,
@@ -184,7 +185,7 @@ async function uploadDashScopeOss(
         form.append("x-oss-forbid-overwrite", cert.x_oss_forbid_overwrite);
         form.append("success_action_status", "200");
         form.append("x-oss-content-type", fileInfo.mime || "image/png");
-        form.append("file", new Blob([fileInfo.buf], { type: fileInfo.mime || "image/png" }), fileInfo.filename);
+        form.append("file", new Blob([new Uint8Array(fileInfo.buf)], { type: fileInfo.mime || "image/png" }), fileInfo.filename);
 
         const upRes = await fetch(cert.upload_host, {
           method: "POST",
@@ -326,8 +327,8 @@ async function createDashScopeVideoTask(
 
   function clampDashScopeDuration(durationSeconds?: number): number {
     const d = Math.round(Number(durationSeconds || 5));
-    if (d <= 3) return 3;
-    if (d === 4) return 4;
+    // 阿里百炼 Wanx 2.1 官方参数 parameters.duration 默认为 5 秒（若模型支持 10 秒则映射为 10）
+    if (d >= 8) return 10;
     return 5;
   }
   const duration = clampDashScopeDuration(input.durationSeconds);
@@ -557,7 +558,8 @@ function buildArkSiblingFields(
   /** 未开启有声时不传 generate_audio（与官方 curl 一致，避免网关误判） */
   if (opts.generateAudio) o.generate_audio = true;
   if (durationSeconds != null && Number.isFinite(durationSeconds)) {
-    o.duration = Math.round(Number(durationSeconds));
+    const d = Math.round(Number(durationSeconds));
+    o.duration = d >= 8 ? 10 : 5;
   }
   if (cfg.arkResolution) o.resolution = cfg.arkResolution;
   return o;
@@ -881,7 +883,7 @@ async function pollArkTask(cfg: VideoProviderConfig, taskId: string): Promise<st
   for (let round = 1; round <= maxRounds; round++) {
     let roundStatus = "";
     for (const url of resolveArkGetUrls(cfg.baseUrl, taskId)) {
-      const tries: Array<() => Promise<Response>> = [
+      const tries: Array<() => Promise<UndiciResponse>> = [
         () => undiciFetch(url, { dispatcher: undiciAgent, method: "GET", headers, signal: AbortSignal.timeout(5000) }),
         () =>
           undiciFetch(url, {
@@ -1017,7 +1019,7 @@ async function pollVideoByTaskId(
     let roundState = "";
     for (const u of urls) {
       // 兼容有的接口 GET，有的接口 POST 查询
-      const tries: Array<() => Promise<Response>> = [
+      const tries: Array<() => Promise<UndiciResponse>> = [
         () =>
           undiciFetch(u, {
             dispatcher: undiciAgent,
@@ -1241,18 +1243,19 @@ export async function generateVideoByHook(
     ];
   }
 
-  let r: Response | null = null;
+  let r: UndiciResponse | null = null;
   let lastText = "";
   let successPayload: Record<string, unknown> | null = null;
   let lastHookFailSnap: ModelApiCallSnapshot | undefined;
   for (let i = 0; i < attemptPayloads.length; i++) {
     const payload = attemptPayloads[i]!;
-    r = await post(payload);
-    if (r.ok) {
+    const resp = await post(payload);
+    r = resp;
+    if (resp.ok) {
       successPayload = payload;
       break;
     }
-    lastText = await r.text().catch(() => "");
+    lastText = await resp.text().catch(() => "");
     lastHookFailSnap = {
       capturedAt: new Date().toISOString(),
       taskKind: "video",
@@ -1263,7 +1266,7 @@ export async function generateVideoByHook(
       requestBody: sanitizeModelRequestBody(payload),
       notes: [
         `尝试 ${i + 1}/${attemptPayloads.length}`,
-        `HTTP ${r.status}`,
+        `HTTP ${resp.status}`,
         lastText ? lastText.slice(0, 500) : "(无响应体)",
       ],
     };

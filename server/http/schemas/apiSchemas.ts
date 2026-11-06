@@ -114,6 +114,17 @@ export const cfgBody = z.object({
       token: z.string().max(500).optional(),
     })
     .optional(),
+  tts: z
+    .object({
+      provider: z.string().optional(),
+      baseUrl: z.string().optional(),
+      apiKey: z.string().optional(),
+      model: z.string().optional(),
+      voice: z.string().optional(),
+      enabled: z.boolean().optional(),
+      autoMuxVideo: z.boolean().optional(),
+    })
+    .optional(),
 });
 
 export const createBody = z.object({
@@ -153,8 +164,17 @@ export const shotSchema = z.object({
   videoRunMode: z.enum(["first_frame", "first_last", "multi_ref", "omni", "text_only"]).optional(),
   lastFrameImageUrl: z.string().max(50_000).optional(),
   lastFrameRemoteUrl: z.string().max(50_000).optional(),
+  audioUrl: z.string().max(2000).optional(),
+  voice: z.string().max(200).optional(),
+  speaker: z.string().max(200).optional(),
   videoRefAudioUrl: z.string().max(2000).optional(),
   videoRefVideoUrl: z.string().max(2000).optional(),
+});
+
+export const shotTtsBody = z.object({
+  text: z.string().max(10_000).optional(),
+  model: z.string().max(100).optional(),
+  voice: z.string().max(100).optional(),
 });
 
 export const modelApiCallSchema = z.object({
@@ -204,6 +224,7 @@ export const projectPatchBody = z.object({
         imageUrl: z.string().max(50_000).optional(),
         remoteImageUrl: z.string().max(50_000).optional(),
         note: z.string().max(5000).optional(),
+        voice: z.string().max(200).optional(),
       }),
     )
     .max(2000)
@@ -221,9 +242,17 @@ export const assetGenerateBatchBody = z.object({
   assetIds: z.array(z.string().min(1)).optional(),
 });
 
+export const uploadAssetImageBody = z.object({
+  dataUrl: z.string().min(1),
+  filename: z.string().max(256).optional(),
+});
+
 export const storyboardGenerateImageBody = z.object({
   promptOverride: z.string().max(12_000).optional(),
-  referenceImageUrls: z.array(z.string().max(4000)).max(12).optional(),
+  imagePrompt: z.string().max(12_000).optional(),
+  referenceImageUrls: z.array(z.string().max(10_000_000)).max(12).optional(),
+  refStrength: z.number().min(0).max(1).optional(),
+  promptExtend: z.boolean().optional(),
 });
 
 export const generateImagesBody = z.object({
@@ -243,10 +272,13 @@ export const videoRunOnceBody = z.object({
 
 export const videoPromptPreviewBody = z.object({
   promptOverride: z.string().max(12_000).optional(),
+  videoPrompt: z.string().max(12_000).optional(),
+  durationSec: z.number().optional(),
 });
 
 export const imagePromptPreviewBody = z.object({
   promptOverride: z.string().max(12_000).optional(),
+  imagePrompt: z.string().max(12_000).optional(),
 });
 
 export const publishEasyImageBody = z.object({

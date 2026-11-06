@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { AssetItem, ModelApiCallSnapshot, StoryboardShot } from "./types.js";
 import { dataDir, getDb } from "./db.js";
@@ -86,6 +86,46 @@ export async function listShotImageFileUrlsFromDisk(projectId: string, shotId: s
   const rows = withStats.filter((x): x is NonNullable<typeof x> => x != null);
   rows.sort((a, b) => b.mtime - a.mtime);
   return rows.map((r) => r.url);
+}
+
+/** 删除指定镜头的图片文件：可指定特定 targetUrl，未提供则删除全部 */
+export async function deleteShotImageFiles(
+  projectId: string,
+  shotId: string,
+  targetUrl?: string,
+): Promise<{ deletedFiles: string[]; remainingUrls: string[] }> {
+  const dir = path.join(fileRoot(), projectId, "shots");
+  let names: string[];
+  try {
+    names = await readdir(dir);
+  } catch {
+    return { deletedFiles: [], remainingUrls: [] };
+  }
+  const re = new RegExp(`^${escapeRegExp(shotId)}(?:-\\d+)?${SHOT_FILE_EXT_RE}`, "i");
+  const matched = names.filter((n) => re.test(n));
+  const deletedFiles: string[] = [];
+
+  let targetFilename: string | undefined;
+  if (targetUrl) {
+    const cleanUrl = targetUrl.trim().split("?")[0];
+    const base = path.basename(cleanUrl);
+    if (base) targetFilename = base;
+  }
+
+  for (const filename of matched) {
+    if (!targetFilename || filename.toLowerCase() === targetFilename.toLowerCase()) {
+      const abs = path.join(dir, filename);
+      try {
+        await unlink(abs);
+        deletedFiles.push(filename);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  const remainingUrls = await listShotImageFileUrlsFromDisk(projectId, shotId);
+  return { deletedFiles, remainingUrls };
 }
 
 /** 多次生图前：若已有主文件 uuid.<ext>，先改名为 uuid-<时间戳>.<ext>，避免覆盖丢失历史 */

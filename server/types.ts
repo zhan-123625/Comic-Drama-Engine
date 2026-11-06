@@ -58,6 +58,12 @@ export type StoryboardShot = {
   /** 首尾帧模式：尾帧（本地路径或 URL，逻辑同关键帧） */
   lastFrameImageUrl?: string;
   lastFrameRemoteUrl?: string;
+  /** 台词对白语音音频 URL（/api/files/projects/.../audio/...） */
+  audioUrl?: string;
+  /** 本镜头台词音色标识（留空则根据角色或全局设置自动分配） */
+  voice?: string;
+  /** 说话人名称（如“团团”、“滚滚”、“旁白”，留空则自动从台词提取） */
+  speaker?: string;
   /** 全能参考：参考音频 / 参考视频 URL（由下游网关解析） */
   videoRefAudioUrl?: string;
   videoRefVideoUrl?: string;
@@ -82,6 +88,8 @@ export type AssetItem = {
   /** 第三方或生图接口返回 URL（可能过期）；有本地 `imageUrl` 时视频侧优先本地 */
   remoteImageUrl?: string;
   note?: string;
+  /** 角色资产专用：配音音色模型（如 sambert-zhixiao-v1、sambert-zhichu-v1） */
+  voice?: string;
 };
 
 /** 单次 HTTP 调用快照（Authorization 已脱敏；body 内 data URL 已省略） */
@@ -102,6 +110,8 @@ export type VideoJob = {
   kind?: "video" | "image";
   status: "queued" | "running" | "done" | "failed";
   message: string;
+  /** 关联分镜 ID（可选） */
+  shotId?: string;
   /** 关联分镜序号（管线入队时写入，runner 用其取 prompt / 参考图） */
   shotIndex?: number;
   prompt?: string;
@@ -145,5 +155,6 @@ export type PipelineEvent =
   | { type: "stage"; stage: PipelineStage; status: "start" | "done" | "error"; detail?: string }
   | { type: "director"; step: DirectorStep; approved: boolean; feedback: string; attempt: number }
   | { type: "job"; job: VideoJob; index: number }
+  | { type: "storyboards"; storyboards: StoryboardShot[] }
   | { type: "complete" }
   | { type: "error"; message: string };

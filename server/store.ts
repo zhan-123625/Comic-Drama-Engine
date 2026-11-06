@@ -1,4 +1,6 @@
-import { getDb, runTransaction } from "./db.js";
+import fs from "node:fs";
+import path from "node:path";
+import { getDb, runTransaction, dataDir } from "./db.js";
 import { z } from "zod";
 import { publicShotImagePath } from "./imagePersist.js";
 import { jsonStringifyModelSnapshot } from "./modelRequestSnapshot.js";
@@ -78,6 +80,8 @@ type ShotRow = {
   last_frame_remote_url: string | null;
   video_ref_audio_url: string | null;
   video_ref_video_url: string | null;
+  tts_voice: string | null;
+  tts_speaker: string | null;
 };
 
 /** Variant used by lightweight/lean queries that omit image_blob and image_mime. */
@@ -198,6 +202,7 @@ function parseAssetArrayFromJson(v: unknown): AssetItem[] {
       imageUrl: x.imageUrl ? String(x.imageUrl) : undefined,
       remoteImageUrl: x.remoteImageUrl ? String(x.remoteImageUrl) : undefined,
       note: x.note ? String(x.note) : undefined,
+      voice: (x as { voice?: unknown }).voice ? String((x as { voice?: unknown }).voice) : undefined,
     } satisfies AssetItem;
   });
   return dedupeAssets(mapped);
@@ -242,6 +247,9 @@ function mapShot(
     lastFrameRemoteUrl: row.last_frame_remote_url?.trim()
       ? row.last_frame_remote_url.trim().slice(0, 50_000)
       : undefined,
+    audioUrl: row.video_ref_audio_url?.trim() ? row.video_ref_audio_url.trim().slice(0, 2000) : undefined,
+    voice: row.tts_voice?.trim() || undefined,
+    speaker: row.tts_speaker?.trim() || undefined,
     videoRefAudioUrl: row.video_ref_audio_url?.trim() ? row.video_ref_audio_url.trim().slice(0, 2000) : undefined,
     videoRefVideoUrl: row.video_ref_video_url?.trim() ? row.video_ref_video_url.trim().slice(0, 2000) : undefined,
   };
@@ -319,7 +327,7 @@ function hydrateProject(projectRow: Record<string, unknown>): Project {
               prompt, note, video_prompt, image_prompt, video_extra_asset_ids_json, video_excluded_asset_ids_json, video_excluded_asset_ids_json, image_gen_source_url, remote_image_url, image_mime,
               image_blob,
               image_model_id, video_model_id, video_run_mode,
-              last_frame_image_url, last_frame_remote_url, video_ref_audio_url, video_ref_video_url,
+              last_frame_image_url, last_frame_remote_url, video_ref_audio_url, video_ref_video_url, tts_voice, tts_speaker,
               (CASE WHEN image_blob IS NOT NULL AND length(image_blob) > 0 THEN 1 ELSE 0 END) AS has_blob
        FROM storyboard_shots WHERE project_id = ? ORDER BY sort_index ASC`,
     )
@@ -377,7 +385,7 @@ export const store = {
                 shot_no, shot_size, camera, content, dialogue, music, sfx, duration_sec,
                 prompt, note, video_prompt, image_prompt, video_extra_asset_ids_json, video_excluded_asset_ids_json, image_gen_source_url, remote_image_url,
                 image_model_id, video_model_id, video_run_mode,
-                last_frame_image_url, last_frame_remote_url, video_ref_audio_url, video_ref_video_url,
+                last_frame_image_url, last_frame_remote_url, video_ref_audio_url, video_ref_video_url, tts_voice, tts_speaker,
                 (CASE WHEN image_blob IS NOT NULL AND length(image_blob) > 0 THEN 1 ELSE 0 END) AS has_blob
          FROM storyboard_shots WHERE project_id IN (${placeholders}) ORDER BY sort_index ASC`,
       )
@@ -607,9 +615,10 @@ export const store = {
           prompt, note, video_prompt, image_prompt, video_extra_asset_ids_json, video_excluded_asset_ids_json,
           image_gen_source_url, remote_image_url, image_mime, image_blob,
           image_model_id, video_model_id, video_run_mode,
-          last_frame_image_url, last_frame_remote_url, video_ref_audio_url, video_ref_video_url
+          last_frame_image_url, last_frame_remote_url, video_ref_audio_url, video_ref_video_url,
+          tts_voice, tts_speaker
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(shot_id) DO UPDATE SET
           sort_index=excluded.sort_index, scene_no=excluded.scene_no, shot_no=excluded.shot_no,
           shot_size=excluded.shot_size, camera=excluded.camera, content=excluded.content,
@@ -621,7 +630,8 @@ export const store = {
           image_model_id=excluded.image_model_id, video_model_id=excluded.video_model_id,
           video_run_mode=excluded.video_run_mode, last_frame_image_url=excluded.last_frame_image_url,
           last_frame_remote_url=excluded.last_frame_remote_url, video_ref_audio_url=excluded.video_ref_audio_url,
-          video_ref_video_url=excluded.video_ref_video_url
+          video_ref_video_url=excluded.video_ref_video_url,
+          tts_voice=excluded.tts_voice, tts_speaker=excluded.tts_speaker
       `);
 
       for (const shot of project.storyboards) {
@@ -674,8 +684,10 @@ export const store = {
           shot.videoRunMode?.trim() || null,
           shot.lastFrameImageUrl?.trim() ? shot.lastFrameImageUrl.trim().slice(0, 50_000) : null,
           shot.lastFrameRemoteUrl?.trim() ? shot.lastFrameRemoteUrl.trim().slice(0, 50_000) : null,
-          shot.videoRefAudioUrl?.trim() ? shot.videoRefAudioUrl.trim().slice(0, 2000) : null,
+          (shot.audioUrl?.trim() || shot.videoRefAudioUrl?.trim() || null)?.slice(0, 2000) ?? null,
           shot.videoRefVideoUrl?.trim() ? shot.videoRefVideoUrl.trim().slice(0, 2000) : null,
+          shot.voice?.trim() || null,
+          shot.speaker?.trim() || null,
         );
       }
 
@@ -721,19 +733,35 @@ export const store = {
     return n > 0;
   },
 
-  /** 分镜行内嵌图片 BLOB（无有效数据时返回 null）。 */
+  /** 分镜行内嵌图片 BLOB（无有效数据时从磁盘同名文件 fallback）。 */
   getStoryboardShotImagePayload(projectId: string, shotId: string): { body: Buffer; mime: string } | null {
     const d = getDb();
     const row = d
       .prepare("SELECT image_blob, image_mime FROM storyboard_shots WHERE project_id = ? AND shot_id = ?")
       .get(projectId, shotId) as { image_blob: Buffer | Uint8Array | null; image_mime: string | null } | undefined;
-    if (!row) return null;
-    const raw = row.image_blob;
-    if (raw == null) return null;
-    const size = Buffer.isBuffer(raw) ? raw.length : raw.byteLength;
-    if (!size) return null;
-    const body: Buffer = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
-    const mime = (row.image_mime && String(row.image_mime).trim()) || "application/octet-stream";
-    return { body, mime };
+    if (row && row.image_blob != null) {
+      const raw = row.image_blob;
+      const size = Buffer.isBuffer(raw) ? raw.length : raw.byteLength;
+      if (size > 0) {
+        const body: Buffer = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
+        const mime = (row.image_mime && String(row.image_mime).trim()) || "image/png";
+        return { body, mime };
+      }
+    }
+    // Fallback: check on-disk shots file
+    const exts = [".png", ".jpg", ".jpeg", ".webp"];
+    for (const ext of exts) {
+      const filePath = path.join(dataDir, "files", "projects", projectId, "shots", `${shotId}${ext}`);
+      if (fs.existsSync(filePath)) {
+        try {
+          const body = fs.readFileSync(filePath);
+          const mime = ext === ".png" ? "image/png" : ext === ".webp" ? "image/webp" : "image/jpeg";
+          return { body, mime };
+        } catch {
+          // ignore read error
+        }
+      }
+    }
+    return null;
   },
 };

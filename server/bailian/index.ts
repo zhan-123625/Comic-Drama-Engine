@@ -5,10 +5,14 @@
 export * from "../providers/bailianManagedAgent.js";
 export * from "../bailianPresets.js";
 
-import Bailian20231229 from "@alicloud/bailian20231229";
+import BailianPkg from "@alicloud/bailian20231229";
 import { $OpenApiUtil } from "@alicloud/openapi-core";
 
-export { Bailian20231229, $OpenApiUtil };
+export type Bailian20231229 = any;
+
+const ClientClass = ((BailianPkg as any).default || BailianPkg) as new (config: any) => Bailian20231229;
+
+export { ClientClass as BailianClient, $OpenApiUtil };
 
 /**
  * 快速创建官方 OpenAPI Client
@@ -25,5 +29,5 @@ export function createBailianOpenApiClient(opts: {
     endpoint: opts.endpoint || "bailian.cn-beijing.aliyuncs.com",
     regionId: opts.regionId || "cn-beijing",
   });
-  return new Bailian20231229(config);
+  return new ClientClass(config);
 }

@@ -10,7 +10,7 @@ function clean(s: string): string {
 }
 
 const NEXT_LAYER_START =
-  /\*\*(?:首帧|镜内动态与神态|镜内动态|尾帧)\*\*\s*[：:]|【(?:首帧|镜内动态与神态|镜内动态|尾帧)】\s*[：:]?/g;
+  /(?:\*\*|【)?(?:首帧|镜内动态与神态|镜内动态|镜头动态与神态|镜头动态|尾帧)(?:\*\*|】)?\s*[：:]/g;
 
 function extractLayerBody(full: string, headerRe: RegExp): string {
   const m = headerRe.exec(full);
@@ -24,6 +24,7 @@ function extractLayerBody(full: string, headerRe: RegExp): string {
 
 /**
  * 从分镜 content 中解析 Agent 约定的分段（**首帧** / **镜内动态与神态** / **尾帧** 等）。
+ * 支持包含 Markdown 粗体 **、全角括号【】或纯文本形式的标签。
  * 无分段时各字段为空字符串。
  */
 export function parseStoryboardContentLayers(raw: string): {
@@ -34,12 +35,12 @@ export function parseStoryboardContentLayers(raw: string): {
   const full = normalizeHtmlishToPlainText(raw);
   if (!full.trim()) return { firstFrame: "", dynamicAndExpression: "", lastFrame: "" };
 
-  const firstFrame = extractLayerBody(full, /\*\*首帧\*\*\s*[：:]|【首帧】\s*[：:]?/);
+  const firstFrame = extractLayerBody(full, /(?:\*\*|【)?首帧(?:\*\*|】)?\s*[：:]/);
   const dynamicAndExpression = extractLayerBody(
     full,
-    /\*\*镜内动态与神态\*\*\s*[：:]|【镜内动态与神态】\s*[：:]?|\*\*镜内动态\*\*\s*[：:]|【镜内动态】\s*[：:]?/,
+    /(?:\*\*|【)?(?:镜内动态与神态|镜内动态|镜头动态与神态|镜头动态)(?:\*\*|】)?\s*[：:]/,
   );
-  const lastFrame = extractLayerBody(full, /\*\*尾帧\*\*\s*[：:]|【尾帧】\s*[：:]?/);
+  const lastFrame = extractLayerBody(full, /(?:\*\*|【)?尾帧(?:\*\*|】)?\s*[：:]/);
 
   return { firstFrame, dynamicAndExpression, lastFrame };
 }
@@ -57,11 +58,6 @@ export function extractFirstKeyframeHeuristicFromPlain(text: string): string {
       .replace(/[，,、；;：:]\s*$/u, "");
     return head || t;
   }
-  const sentences = t
-    .split(/(?<=[。！？])/u)
-    .map((x) => x.trim())
-    .filter(Boolean);
-  if (sentences.length > 1 && sentences[0]!.length >= 10) return sentences[0]!;
   return t;
 }
 
@@ -96,12 +92,14 @@ export type StoryboardImageVisualTarget = "first" | "last";
  */
 export function resolveStoryboardImageVisualBody(
   shot: StoryboardShot,
-  opts: { promptOverride?: string; targetFrame: StoryboardImageVisualTarget },
+  opts: { promptOverride?: string; targetFrame: StoryboardImageVisualTarget; ignoreImagePrompt?: boolean },
 ): string {
   const ov = opts.promptOverride?.trim() ?? "";
   if (ov) return normalizeHtmlishToPlainText(ov);
-  const ip = shot.imagePrompt?.trim() ?? "";
-  if (ip && opts.targetFrame === "first") return normalizeHtmlishToPlainText(ip);
+  if (!opts.ignoreImagePrompt) {
+    const ip = shot.imagePrompt?.trim() ?? "";
+    if (ip && opts.targetFrame === "first") return normalizeHtmlishToPlainText(ip);
+  }
 
   const raw = clean(shot.content) || clean(shot.prompt);
   const full = normalizeHtmlishToPlainText(raw);

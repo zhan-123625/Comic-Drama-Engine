@@ -18,6 +18,7 @@ import { buildStoryboardImageGenerationPrompt, shotHasDrawableImageContent } fro
 import { runImageAgentForStoryboardShot } from "./agents/imageAgent.js";
 import { tryEasyImageUrlAfterGenerate } from "./easyImageAfterGenerate.js";
 import { bytesFromGenerateImageResult, persistGeneratedVideoUrl, saveProjectImageFile } from "./imagePersist.js";
+import { tryMuxAudioIntoVideo } from "./ttsService.js";
 import { sleep } from "./utils/sleep.js";
 
 const running = new Set<string>(); // projectId
@@ -238,9 +239,17 @@ export async function runJobQueue(projectId: string, opts?: { delayMs?: number }
                   runMode: enriched.runMode,
                 });
                 job.status = "done";
-                job.resultUrl = await persistGeneratedVideoUrl(project.id, job.id, videoUrl);
+                const storedVideo = await persistGeneratedVideoUrl(project.id, job.id, videoUrl);
+                let finalVideo = storedVideo;
+                let muxed = false;
+                if (shot) {
+                  const muxRes = await tryMuxAudioIntoVideo(project.id, shot.id, storedVideo);
+                  finalVideo = muxRes.videoUrl;
+                  muxed = muxRes.muxed;
+                }
+                job.resultUrl = finalVideo;
                 job.modelApiCall = videoModelApiCall;
-                job.message = "视频生成完成";
+                job.message = muxed ? "视频生成完成（已合成台词音轨）" : "视频生成完成";
                 logger.info("video job succeeded", {
                   projectId,
                   jobId: job.id,
@@ -248,6 +257,7 @@ export async function runJobQueue(projectId: string, opts?: { delayMs?: number }
                   shotIndex: job.shotIndex,
                   durationMs: Date.now() - t0,
                   matchedAssets: enriched.matchedAssets.length,
+                  audioMuxed: muxed,
                 });
               }
             } catch (e) {

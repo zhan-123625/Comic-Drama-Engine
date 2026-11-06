@@ -20,7 +20,7 @@ import {
   STORYBOARD_MAX_REFERENCE_IMAGES,
   VIDEO_REFINE_FEEDBACK_MAX,
   PIPELINE_STAGE_ORDER,
-} from "./pipelineConstants";
+} from "./pipelineConstants.js";
 
 describe("pipelineConstants", () => {
   it("导演门禁应大于等于 3", () => {

@@ -21,7 +21,7 @@ import ScriptEditor from "./views/ScriptEditor.vue";
 import PipelinePanel from "./views/PipelinePanel.vue";
 import AssetManager from "./views/AssetManager.vue";
 import { buildEditorPatch } from "./projectUtils";
-import type { MenuKey, SideTabKey } from "./types";
+import type { MenuKey, SideTabKey, StoryboardImageSize } from "./types";
 
 import { useProjectsStore } from "./stores/projects";
 import { useUiStore } from "./stores/ui";
@@ -295,7 +295,7 @@ void loadProjects();
           @update:art-style="selected.artStyle = $event"
           @update:genre-type="selected.genreType = $event"
           @update:video-aspect="selected.videoAspect = $event"
-          @update:storyboard-image-size="selected.storyboardImageSize = $event"
+          @update:storyboard-image-size="selected.storyboardImageSize = $event as StoryboardImageSize"
         />
 
         <PipelinePanel

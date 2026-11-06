@@ -73,7 +73,7 @@ function httpStatusToCode(status: number): string {
   return "Error";
 }
 
-export function parseBody<T>(schema: z.ZodType<T>, body: unknown, res: express.Response): T | null {
+export function parseBody<T extends z.ZodTypeAny>(schema: T, body: unknown, res: express.Response): z.output<T> | null {
   const parsed = schema.safeParse(body);
   if (!parsed.success) {
     const req = res.req;

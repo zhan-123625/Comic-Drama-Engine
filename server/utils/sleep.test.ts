@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { sleep } from "./sleep";
+import { sleep } from "./sleep.js";
 
 describe("sleep", () => {
   it("应导出 sleep 函数", () => {

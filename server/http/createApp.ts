@@ -47,7 +47,7 @@ export function createApp(): express.Application {
     express.static(path.join(dataDir, "files"), {
       setHeaders(res, filePath) {
         const norm = filePath.replace(/\\/g, "/");
-        if (norm.includes("/shots/") || norm.includes("/assets/") || norm.includes("/videos/")) {
+        if (norm.includes("/shots/") || norm.includes("/assets/") || norm.includes("/videos/") || norm.includes("/audio/")) {
           res.setHeader("Cache-Control", "private, max-age=0, must-revalidate");
         }
       },

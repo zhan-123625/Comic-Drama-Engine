@@ -672,12 +672,35 @@ export const usePipelineStore = defineStore("pipeline", () => {
   function imageJobsForShotIndex(shotIndex: number) {
     const p = projectsStore.selected;
     if (!p) return [];
-    const out: VideoJob[] = [];
-    for (let i = p.videoJobs.length - 1; i >= 0; i--) {
-      const j = p.videoJobs[i]!;
-      if (j.kind === "image" && j.shotIndex === shotIndex && j.status !== "done") out.push(j);
+    // 找出该镜头所有的生图任务
+    const shotImageJobs = p.videoJobs.filter(
+      (j) => j.kind === "image" && j.shotIndex === shotIndex,
+    );
+    if (!shotImageJobs.length) return [];
+
+    // 若有处于排队或执行中的任务，展示进行中的任务
+    const activeJobs = shotImageJobs.filter(
+      (j) => j.status === "queued" || j.status === "running",
+    );
+    if (activeJobs.length > 0) {
+      return activeJobs;
     }
-    return out;
+
+    // 若无进行中任务，取最新一条生图任务
+    const latest = shotImageJobs[shotImageJobs.length - 1]!;
+    // 若最新一条生图任务失败，展示报错信息（用户可点右上角 ✕ 随时手动消除）
+    if (latest.status === "failed") {
+      return [latest];
+    }
+
+    return [];
+  }
+
+  function dismissJob(jobId: string) {
+    const p = projectsStore.selected;
+    if (!p) return;
+    p.videoJobs = p.videoJobs.filter((j) => j.id !== jobId);
+    void projectsStore.savePatch({ videoJobs: p.videoJobs });
   }
 
   function formatModelApiCallJson(m: ModelApiCallSnapshot | undefined) {
@@ -779,11 +802,18 @@ export const usePipelineStore = defineStore("pipeline", () => {
     y: 0,
     id: null,
   });
-  const storyboardRowContextMenu = ref<{ visible: boolean; x: number; y: number; id: string | null }>({
+  const storyboardRowContextMenu = ref<{
+    visible: boolean;
+    x: number;
+    y: number;
+    id: string | null;
+    targetImageUrl?: string | null;
+  }>({
     visible: false,
     x: 0,
     y: 0,
     id: null,
+    targetImageUrl: null,
   });
   const videoRowContextMenu = ref<{ visible: boolean; x: number; y: number; id: string | null }>({
     visible: false,
@@ -796,7 +826,10 @@ export const usePipelineStore = defineStore("pipeline", () => {
     if (sourceChapterContextMenu.value.visible) sourceChapterContextMenu.value.visible = false;
     if (scriptSceneRowContextMenu.value.visible) scriptSceneRowContextMenu.value.visible = false;
     if (assetRowContextMenu.value.visible) assetRowContextMenu.value.visible = false;
-    if (storyboardRowContextMenu.value.visible) storyboardRowContextMenu.value.visible = false;
+    if (storyboardRowContextMenu.value.visible) {
+      storyboardRowContextMenu.value.visible = false;
+      storyboardRowContextMenu.value.targetImageUrl = null;
+    }
     if (videoRowContextMenu.value.visible) videoRowContextMenu.value.visible = false;
     closeVideoExtraAttachPopover();
   }
@@ -810,8 +843,8 @@ export const usePipelineStore = defineStore("pipeline", () => {
     y: 0,
   });
   const storyboardVideoExtraPicker = ref<Partial<Record<string, { tab: AssetFilterTab; query: string }>>>({});
-  const VIDEO_EXTRA_POPOVER_W = 400;
-  const VIDEO_EXTRA_POPOVER_H = 300;
+  const VIDEO_EXTRA_POPOVER_W = 440;
+  const VIDEO_EXTRA_POPOVER_H = 340;
 
   const videoExtraPopoverShot = computed(() => {
     const id = videoExtraAttachPopover.value.shotId;
@@ -834,12 +867,41 @@ export const usePipelineStore = defineStore("pipeline", () => {
     }
     const el = e.currentTarget as HTMLElement;
     const r = el.getBoundingClientRect();
+    const popoverW = Math.min(VIDEO_EXTRA_POPOVER_W, window.innerWidth - 24);
     let x = r.left;
     let y = r.bottom + 6;
-    const maxX = window.innerWidth - VIDEO_EXTRA_POPOVER_W - 8;
-    if (x > maxX) x = Math.max(8, maxX);
-    if (y + VIDEO_EXTRA_POPOVER_H > window.innerHeight - 8) {
-      y = Math.max(8, r.top - VIDEO_EXTRA_POPOVER_H - 6);
+
+    // 若靠右会超出屏幕，优先与按钮右侧对齐
+    if (x + popoverW > window.innerWidth - 12) {
+      x = r.right - popoverW;
+    }
+    // 严格限制在视口横向可见范围内
+    if (x + popoverW > window.innerWidth - 12) {
+      x = window.innerWidth - popoverW - 12;
+    }
+    if (x < 12) {
+      x = 12;
+    }
+    // 纵向检查：若底部超出视口，翻转到按钮上方
+    if (y + VIDEO_EXTRA_POPOVER_H > window.innerHeight - 12) {
+      y = Math.max(12, r.top - VIDEO_EXTRA_POPOVER_H - 6);
+    }
+    videoExtraAttachPopover.value = { visible: true, shotId: shot.id, x, y };
+  }
+
+  function openVideoExtraAttachPopoverAt(shot: StoryboardShot, targetX: number, targetY: number) {
+    const popoverW = Math.min(VIDEO_EXTRA_POPOVER_W, window.innerWidth - 24);
+    let x = targetX;
+    let y = targetY + 6;
+
+    if (x + popoverW > window.innerWidth - 12) {
+      x = window.innerWidth - popoverW - 12;
+    }
+    if (x < 12) {
+      x = 12;
+    }
+    if (y + VIDEO_EXTRA_POPOVER_H > window.innerHeight - 12) {
+      y = Math.max(12, targetY - VIDEO_EXTRA_POPOVER_H - 6);
     }
     videoExtraAttachPopover.value = { visible: true, shotId: shot.id, x, y };
   }
@@ -866,6 +928,9 @@ export const usePipelineStore = defineStore("pipeline", () => {
   const storyboardVideoModalVisible = ref(false);
   const storyboardVideoModalShotId = ref<string | null>(null);
   const storyboardVideoDraftPrompt = ref("");
+  const storyboardVideoDefaultBase = ref("");
+  const storyboardVideoEnrichedBase = ref("");
+  const storyboardVideoDraftDuration = ref<number>(5);
   const storyboardVideoEnrichedPreview = ref("");
   const storyboardVideoTextPayloadPreview = ref("");
   const storyboardVideoPreviewMatched = ref<Array<{ id: string; name: string; type: string }>>([]);
@@ -894,6 +959,8 @@ export const usePipelineStore = defineStore("pipeline", () => {
   const storyboardImageModalVisible = ref(false);
   const storyboardImageModalShotId = ref<string | null>(null);
   const storyboardImageDraftPrompt = ref("");
+  const storyboardImageDefaultBase = ref("");
+  const storyboardImageEnrichedBase = ref("");
   const storyboardImageFullPreview = ref("");
   const storyboardImagePreviewMatched = ref<Array<{ id: string; name: string; type: string }>>([]);
   type StoryboardImagePreviewSlot = {
@@ -1220,6 +1287,8 @@ export const usePipelineStore = defineStore("pipeline", () => {
     latestVideoJobByShotIndex,
     videoJobsForShotIndex,
     imageJobsForShotIndex,
+    dismissJob,
+    dismissFailedImageJob: dismissJob,
     formatModelApiCallJson,
     isLikelyVideoResultUrl,
     // Lightbox
@@ -1251,6 +1320,7 @@ export const usePipelineStore = defineStore("pipeline", () => {
     videoExtraPopoverShot,
     closeVideoExtraAttachPopover,
     toggleVideoExtraAttachPopover,
+    openVideoExtraAttachPopoverAt,
     getVideoExtraPickerTab,
     getVideoExtraPickerQuery,
     setVideoExtraPickerTab,
@@ -1259,6 +1329,9 @@ export const usePipelineStore = defineStore("pipeline", () => {
     storyboardVideoModalVisible,
     storyboardVideoModalShotId,
     storyboardVideoDraftPrompt,
+    storyboardVideoDefaultBase,
+    storyboardVideoEnrichedBase,
+    storyboardVideoDraftDuration,
     storyboardVideoEnrichedPreview,
     storyboardVideoTextPayloadPreview,
     storyboardVideoPreviewMatched,
@@ -1270,6 +1343,8 @@ export const usePipelineStore = defineStore("pipeline", () => {
     storyboardImageModalVisible,
     storyboardImageModalShotId,
     storyboardImageDraftPrompt,
+    storyboardImageDefaultBase,
+    storyboardImageEnrichedBase,
     storyboardImageFullPreview,
     storyboardImagePreviewMatched,
     storyboardImagePreviewSlots,

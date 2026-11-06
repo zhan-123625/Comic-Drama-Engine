@@ -7,10 +7,11 @@ describe("compositeReferenceImages", () => {
     expect(res).toBeUndefined();
   });
 
-  it("returns original single url for single item", async () => {
-    const url = "https://example.com/single.png";
-    const res = await compositeReferenceImages([url]);
-    expect(res).toBe(url);
+  it("handles single data url item", async () => {
+    const tiny =
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+    const res = await compositeReferenceImages([tiny]);
+    expect(res).toBe(tiny);
   });
 
   it("composites multiple data urls into a single png base64", async () => {

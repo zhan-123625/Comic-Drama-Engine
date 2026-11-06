@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ref } from "vue";
 import { usePipelineStore } from "../stores/pipeline";
 import { useProjectsStore } from "../stores/projects";
 import { useUiStore } from "../stores/ui";
@@ -7,6 +8,51 @@ import ContextMenu from "../components/ContextMenu.vue";
 const pipeline = usePipelineStore();
 const projectsStore = useProjectsStore();
 const ui = useUiStore();
+
+const assetTargetId = ref<string | null>(null);
+const assetFileInputRef = ref<HTMLInputElement | null>(null);
+
+function triggerUploadForAsset(id: string) {
+  assetTargetId.value = id;
+  assetFileInputRef.value?.click();
+}
+
+async function onAssetFilePicked(e: Event) {
+  const input = e.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = "";
+  const id = assetTargetId.value;
+  const p = projectsStore.selected;
+  if (!file || !id || !p) return;
+
+  const reader = new FileReader();
+  reader.onload = async () => {
+    const dataUrl = reader.result as string;
+    ui.busy = true;
+    try {
+      const res = await fetch(`/api/projects/${p.id}/assets/${id}/upload`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dataUrl, filename: file.name }),
+      });
+      if (!res.ok) {
+        const err = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(err.error || `HTTP ${res.status}`);
+      }
+      const data = (await res.json()) as { ok?: boolean; imageUrl?: string; project?: Parameters<typeof projectsStore.mergeProject>[0] };
+      if (data.project) {
+        projectsStore.mergeProject(data.project);
+      }
+      projectsStore.bumpMediaCache(`asset-${id}`);
+      ui.showToast("资产图片上传成功！", "success");
+    } catch (err) {
+      ui.showToast(`上传失败: ${err instanceof Error ? err.message : String(err)}`, "error");
+    } finally {
+      ui.busy = false;
+    }
+  };
+  reader.readAsDataURL(file);
+}
 
 async function generateAssetImage(assetId: string) {
   const p = projectsStore.selected;
@@ -66,6 +112,7 @@ async function generateAssetBatch(onlyMissing = false) {
 
 function onAssetRowContextMenu(e: MouseEvent, id: string) {
   e.preventDefault();
+  pipeline.closeAllContextMenus();
   pipeline.assetRowContextMenu.visible = true;
   pipeline.assetRowContextMenu.x = e.clientX;
   pipeline.assetRowContextMenu.y = e.clientY;
@@ -76,12 +123,14 @@ function onAssetRowMenuAction(action: string) {
   const id = pipeline.assetRowContextMenu.id;
   pipeline.assetRowContextMenu.visible = false;
   if (!id) return;
+  if (action === "upload-image") triggerUploadForAsset(id);
   if (action === "generate-image") void generateAssetImage(id);
   if (action === "delete") pipeline.removeAsset(id);
 }
 
 const assetRowMenuItems = [
-  { label: "图片生成", action: "generate-image" },
+  { label: "📁 本地上传图片", action: "upload-image" },
+  { label: "🎨 图片生成", action: "generate-image" },
   { label: "删除资产", action: "delete", danger: true },
 ];
 </script>
@@ -231,6 +280,32 @@ const assetRowMenuItems = [
                     "
                   />
                 </label>
+                <label v-if="a.type === 'character'" class="field block" style="margin-top: 6px">
+                  <span class="hint">角色音色 (TTS Voice)</span>
+                  <select v-model="a.voice" class="input small">
+                    <option value="">（智能自动音色：团团配小春，滚滚配龙硕）</option>
+                    <optgroup label="✨ CosyVoice-v2 大模型情感音色（强烈推荐）">
+                      <option value="cosyvoice-v2:longxiaochun_v2">龙小春 · 灵动萌系女童（团团首选·大模型情感语音）</option>
+                      <option value="cosyvoice-v2:longshuo_v2">龙硕 · 阳光风趣少年（滚滚首选·大模型情感语音）</option>
+                      <option value="cosyvoice-v2:longjielidou_v2">杰力豆 · 卡通搞笑男童（滚滚卡通风·大模型情感语音）</option>
+                      <option value="cosyvoice-v2:longwan_v2">龙婉 · 温润知性抒情（旁白首选·大模型情感语音）</option>
+                      <option value="cosyvoice-v2:longmiao_v2">龙喵 · 软萌可爱萝莉女声</option>
+                      <option value="cosyvoice-v2:longcheng_v2">龙橙 · 磁性沉稳解说男声</option>
+                      <option value="cosyvoice-v2:longfeifei_v2">龙菲菲 · 傲娇元气少女</option>
+                      <option value="cosyvoice-v2:longlaotie_v2">龙老铁 · 幽默东北大叔</option>
+                    </optgroup>
+                    <optgroup label="🎙️ Sambert 传统音色（经典备用）">
+                      <option value="sambert-zhiwei-v1">知薇 · 纯真可爱萝莉女声</option>
+                      <option value="sambert-zhiming-v1">知明 · 幽默风趣男声</option>
+                      <option value="sambert-zhiting-v1">知婷 · 温柔知性叙事女声</option>
+                      <option value="sambert-zhixiao-v1">知澖 · 活泼亲切女声</option>
+                      <option value="sambert-zhichu-v1">知厨 · 沉稳自然男声</option>
+                      <option value="sambert-zhishuo-v1">知硕 · 阳光自然男声</option>
+                      <option value="sambert-zhiyuan-v1">知媛 · 优雅知性女声</option>
+                      <option value="sambert-zhiya-v1">知雅 · 甜美可爱女声</option>
+                    </optgroup>
+                  </select>
+                </label>
               </div>
             </div>
             <div>
@@ -241,7 +316,7 @@ const assetRowMenuItems = [
                 placeholder="仅写画面主体描述即可；生图时服务端会按类型自动附加约束，不会改写本框内容"
               />
             </div>
-            <div>
+            <div style="display: flex; flex-direction: column; align-items: center; gap: 6px;">
               <div
                 v-if="a.imageUrl"
                 class="shot-thumb"
@@ -250,6 +325,15 @@ const assetRowMenuItems = [
                 <img :src="projectsStore.mediaSrc(a.imageUrl, `asset-${a.id}`)" alt="资产图" />
               </div>
               <span v-else class="hint">未生成</span>
+              <button
+                type="button"
+                class="btn small"
+                style="padding: 1px 7px; font-size: 11px; white-space: nowrap"
+                title="本地上传此资产的图片（支持 PNG / JPG / WebP）"
+                @click.stop="triggerUploadForAsset(a.id)"
+              >
+                📁 本地上传
+              </button>
             </div>
           </div>
           <ContextMenu
@@ -265,5 +349,12 @@ const assetRowMenuItems = [
       </div>
       <p v-else class="hint">暂无资产。建议先创建"场景/物品"资产并生成图片，再用于视频生成参考。</p>
     </article>
+    <input
+      ref="assetFileInputRef"
+      type="file"
+      accept="image/png,image/jpeg,image/webp,image/jpg"
+      style="display: none"
+      @change="onAssetFilePicked"
+    />
   </section>
 </template>

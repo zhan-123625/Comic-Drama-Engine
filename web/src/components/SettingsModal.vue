@@ -368,6 +368,47 @@ function onVideoArkResolutionSelect(ev: Event) {
       </div>
 
       <div class="cfg-block">
+        <h4>台词语音合成（TTS）与视频配音</h4>
+        <p class="hint">
+          支持使用<strong>阿里云 DashScope 官方神经语音（Sambert）</strong>或 <strong>CosyVoice</strong> 为剧本对白台词自动合成高品质角色语音。
+        </p>
+        <label class="opt">
+          <input v-model="cfg.cfgDraft.tts!.enabled" type="checkbox" />
+          <span>启用台词语音合成（分镜表支持单镜生成台词试听与重录）</span>
+        </label>
+        <label class="opt">
+          <input v-model="cfg.cfgDraft.tts!.autoMuxVideo" type="checkbox" />
+          <span>视频生成后自动合成台词音轨（生成无声视频后，自动将对白语音无损混流入 MP4 视频）</span>
+        </label>
+        <label v-if="cfg.bailianPresets?.tts?.length" class="field">
+          <span>阿里百炼语音音色预设</span>
+          <select v-model="cfg.cfgDraft.tts!.model" class="input">
+            <option v-for="t in cfg.bailianPresets.tts" :key="t.id" :value="t.model">
+              {{ t.label }}
+            </option>
+          </select>
+        </label>
+        <label class="field">
+          <span>API Key（默认复用上方百炼文本/视频 Key，可留空）</span>
+          <input
+            v-model="cfg.cfgDraft.tts!.apiKey"
+            class="input"
+            type="password"
+            autocomplete="off"
+            placeholder="留空则自动使用上方配置的百炼 API Key"
+          />
+        </label>
+        <label class="field">
+          <span>模型标识 (Model)</span>
+          <input
+            v-model="cfg.cfgDraft.tts!.model"
+            class="input"
+            placeholder="sambert-zhixiao-v1 或 cosyvoice-v2"
+          />
+        </label>
+      </div>
+
+      <div class="cfg-block">
         <h4>EasyImage 图床</h4>
         <p class="hint">
           配置后，<strong>资产生图</strong>与<strong>分镜生图</strong>（含管线批次、Runner

@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import express from "express";
 import { store } from "../store.js";
 import {
@@ -10,11 +12,12 @@ import {
 import { regenerateScriptChapter } from "../regenerateChapterScript.js";
 import { runPolishAgent } from "../agents/polishAgent.js";
 import { collectStoryboardImageReferenceDetails } from "../agents/imageAgent.js";
-import { enqueueJob, runJobQueue } from "../jobs.js";
+import { enqueueJob, runJobQueue, appendImageJobRecord } from "../jobs.js";
 import { sseAddClient, sseRemoveClient, sseSend } from "../sse.js";
-import { listShotImageFileUrlsFromDisk } from "../imagePersist.js";
+import { listShotImageFileUrlsFromDisk, deleteShotImageFiles, saveProjectImageFile } from "../imagePersist.js";
 import { publishStoryboardShotToEasyImage } from "../publishShotEasyImage.js";
 import { runVideoOnceForShot } from "../runVideoOnceService.js";
+import { generateShotAudio, tryMuxAudioIntoVideo } from "../ttsService.js";
 import { concatProjectVideos } from "../videoConcat.js";
 import { maskConfig, mergeAppConfig, readConfig, writeConfig, type AppConfig } from "../config.js";
 import { resolveVideoConfigForShot } from "../modelResolve.js";
@@ -26,7 +29,7 @@ import {
   shotBaseImageUrlForVideo,
   shotKeyframeBlockingVideoReason,
 } from "../videoContext.js";
-import { getVideoBasePromptForShot } from "../videoShotPrompt.js";
+import { getVideoBasePromptForShot, enrichStoryboardVideoPromptBase } from "../videoShotPrompt.js";
 import { resolveReferencedAssetsForVideo } from "../videoReferencedAssets.js";
 import { shotVideoRunModeBlockingReason } from "../videoRunMode.js";
 import type { VideoProviderConfig } from "../config.js";
@@ -40,9 +43,15 @@ import {
   BAILIAN_TEXT_MODEL_PRESETS,
   BAILIAN_IMAGE_MODEL_PRESETS,
   BAILIAN_VIDEO_MODEL_PRESETS,
+  BAILIAN_TTS_MODEL_PRESETS,
   formatBailianVideoModes,
 } from "../bailianPresets.js";
-import { buildStoryboardImageGenerationPrompt, resolveStoryboardImageVisualBase } from "../storyboardImagePrompt.js";
+import { BGM_PRESETS, getBgmFilePath, saveProjectBgmFile, listProjectBgms } from "../bgmService.js";
+import {
+  buildStoryboardImageGenerationPrompt,
+  enrichStoryboardImageVisualBase,
+  resolveStoryboardImageVisualBase,
+} from "../storyboardImagePrompt.js";
 import { generateAssetImage } from "../application/services/assetImageGeneration.js";
 import { generateStoryboardImage as runStoryboardImageGeneration } from "../application/services/storyboardImageGeneration.js";
 import { applyProjectPatch } from "../application/services/projectMutation.js";
@@ -71,6 +80,8 @@ import {
   pipelineRunBody,
   jobEnqueueBody,
   jobRunBody,
+  shotTtsBody,
+  uploadAssetImageBody,
 } from "./schemas/apiSchemas.js";
 
 export function registerApiRoutes(app: express.Application): void {
@@ -83,6 +94,41 @@ export function registerApiRoutes(app: express.Application): void {
       variants[s.id] = mergeStoryboardImageVariantUrls(s.imageUrl, disk);
     }
     res.json({ variants });
+  });
+
+  app.delete("/api/projects/:projectId/shots/:shotId/image", async (req, res) => {
+    if (!verifyAuth(req, res)) return;
+    const p = await getProjectOr404(req.params.projectId, res);
+    if (!p) return;
+    const shot = p.storyboards.find((s) => s.id === req.params.shotId);
+    if (!shot) {
+      notFound(res, "shot not found");
+      return;
+    }
+    const targetUrl = typeof req.query.url === "string" ? req.query.url.trim() : undefined;
+    const { remainingUrls } = await deleteShotImageFiles(p.id, shot.id, targetUrl);
+
+    // 如果未指定具体 targetUrl，或者删除的就是当前主图，或者主图已经不在剩余列表中
+    const currentNorm = (shot.imageUrl ?? "").split("?")[0].trim();
+    const targetNorm = (targetUrl ?? "").split("?")[0].trim();
+    const currentWasTarget = !targetUrl || (currentNorm && targetNorm && currentNorm.endsWith(targetNorm));
+    const currentStillRemains = currentNorm && remainingUrls.some((u) => u.split("?")[0].trim().endsWith(currentNorm));
+
+    if (currentWasTarget || !currentStillRemains) {
+      if (remainingUrls.length > 0) {
+        shot.imageUrl = remainingUrls[0];
+      } else {
+        shot.imageUrl = undefined;
+        shot.remoteImageUrl = undefined;
+      }
+    }
+
+    await store.save(p);
+    res.json({
+      success: true,
+      project: p,
+      remainingUrls,
+    });
   });
 
   app.get("/api/health", (_, res) => {
@@ -115,7 +161,32 @@ export function registerApiRoutes(app: express.Application): void {
         ...p,
         modesLabel: formatBailianVideoModes(p.modes),
       })),
+      tts: BAILIAN_TTS_MODEL_PRESETS,
+      bgmPresets: BGM_PRESETS.map((b) => ({
+        ...b,
+        url: `/api/files/bgm/${b.filename}`,
+      })),
     });
+  });
+
+  app.get("/api/bgm/presets", (_req, res) => {
+    res.json({
+      presets: BGM_PRESETS.map((b) => ({
+        ...b,
+        url: `/api/files/bgm/${b.filename}`,
+      })),
+    });
+  });
+
+  app.get("/api/files/bgm/:filename", (req, res) => {
+    const filename = req.params.filename;
+    const filePath = getBgmFilePath(filename);
+    if (!filePath || !fs.existsSync(filePath)) {
+      notFound(res, "bgm file not found");
+      return;
+    }
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    res.sendFile(path.resolve(filePath));
   });
 
   app.put("/api/config", async (req, res) => {
@@ -260,13 +331,74 @@ export function registerApiRoutes(app: express.Application): void {
     });
   });
 
+  app.post("/api/projects/:id/assets/:assetId/upload", async (req, res) => {
+    if (!verifyAuth(req, res)) return;
+    const { id, assetId } = req.params;
+    const p = await getProjectOr404(id, res);
+    if (!p) return;
+    const asset = p.assets.find((a) => a.id === assetId);
+    if (!asset) {
+      notFound(res, "asset not found");
+      return;
+    }
+    const body = parseBody(uploadAssetImageBody, req.body ?? {}, res);
+    if (!body) return;
+
+    try {
+      const m = body.dataUrl.match(/^data:([^;]+);base64,(.+)$/i);
+      const mime = m ? m[1]! : "image/png";
+      const base64Data = m ? m[2]! : body.dataUrl;
+      const buffer = Buffer.from(base64Data, "base64");
+      if (!buffer.length) {
+        badRequest(res, "图片数据为空");
+        return;
+      }
+
+      const localUrl = await saveProjectImageFile(p.id, "assets", asset.id, buffer, mime);
+      const cacheBustUrl = `${localUrl.split("?")[0]}?t=${Date.now()}`;
+      asset.imageUrl = cacheBustUrl;
+      asset.remoteImageUrl = cacheBustUrl;
+      await store.save(p);
+
+      try {
+        await appendImageJobRecord(p.id, {
+          status: "done",
+          message: `本地上传资产图片：${asset.name}（#${asset.index}）`,
+          prompt: "用户本地上传",
+          resultUrl: cacheBustUrl,
+        });
+      } catch {
+        /* ignore */
+      }
+
+      const refreshed = await store.get(p.id);
+      res.json({
+        ok: true,
+        imageUrl: cacheBustUrl,
+        project: refreshed ?? p,
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      logger.error("upload asset image threw", {
+        reqId: res.getHeader("x-request-id"),
+        projectId: id,
+        assetId,
+        error: msg,
+      });
+      sendError(res, 500, `上传资产图片失败: ${msg}`);
+    }
+  });
+
   app.post("/api/projects/:id/storyboards/:shotId/generate-image", async (req, res) => {
     if (!verifyAuth(req, res)) return;
     const body = parseBody(storyboardGenerateImageBody, req.body ?? {}, res);
     if (!body) return;
+    const promptOverride = body.promptOverride?.trim() || body.imagePrompt?.trim();
     const result = await runStoryboardImageGeneration(req.params.id, req.params.shotId, {
-      promptOverride: body.promptOverride,
+      promptOverride: promptOverride || undefined,
       referenceImageUrls: body.referenceImageUrls,
+      refStrength: body.refStrength,
+      promptExtend: body.promptExtend,
     }).catch((e) => ({
       ok: false as const,
       status: 502 as const,
@@ -345,7 +477,7 @@ export function registerApiRoutes(app: express.Application): void {
 
   app.post("/api/projects/:id/videos/enqueue", async (req, res) => {
     if (!verifyAuth(req, res)) return;
-    const id = req.params.id;
+    const id = String(req.params.id);
     logger.info("video enqueue requested", {
       reqId: res.getHeader("x-request-id"),
       projectId: id,
@@ -401,7 +533,7 @@ export function registerApiRoutes(app: express.Application): void {
 
   app.post("/api/projects/:id/videos/retry-failed", async (req, res) => {
     if (!verifyAuth(req, res)) return;
-    const id = req.params.id;
+    const id = String(req.params.id);
     logger.info("video retry failed requested", {
       reqId: res.getHeader("x-request-id"),
       projectId: id,
@@ -456,7 +588,7 @@ export function registerApiRoutes(app: express.Application): void {
 
   app.post("/api/projects/:id/videos/concat", async (req, res) => {
     if (!verifyAuth(req, res)) return;
-    const id = req.params.id;
+    const id = String(req.params.id);
     const p = await getProjectOr404(id, res);
     if (!p) return;
     try {
@@ -480,7 +612,7 @@ export function registerApiRoutes(app: express.Application): void {
 
   app.post("/api/projects/:id/storyboards/:shotId/video-prompt-preview", async (req, res) => {
     if (!verifyAuth(req, res)) return;
-    const id = req.params.id;
+    const id = String(req.params.id);
     const p = await getProjectOr404(id, res);
     if (!p) return;
     const shot = p.storyboards.find((s) => s.id === req.params.shotId);
@@ -492,36 +624,51 @@ export function registerApiRoutes(app: express.Application): void {
     if (!body) return;
     const cfg = await readConfig();
     const videoCfg = cfg.video ? (resolveVideoConfigForShot(shot, cfg) ?? cfg.video) : fallbackVideoCfgForPreview;
-    const base = body.promptOverride?.trim() || getVideoBasePromptForShot(shot);
-    const referencedAssets = await resolveReferencedAssetsForVideo(p, shot, base);
+    const promptOverride = body.promptOverride?.trim() || body.videoPrompt?.trim();
+    const shotForPreview =
+      body.durationSec != null && Number.isFinite(body.durationSec)
+        ? { ...shot, durationSec: body.durationSec }
+        : shot;
+    const defaultBase = getVideoBasePromptForShot(shotForPreview, { ignoreVideoPrompt: true });
+    const base = promptOverride || getVideoBasePromptForShot(shotForPreview);
+    const enrichedBasePrompt = enrichStoryboardVideoPromptBase(shotForPreview, base);
+    const referencedAssets = await resolveReferencedAssetsForVideo(p, shotForPreview, base);
     const enriched = buildVideoInputWithAssets({
       project: p,
-      shot,
+      shot: shotForPreview,
       basePrompt: base,
-      baseImageUrl: shotBaseImageUrlForVideo(shot) ?? shot.imageUrl,
+      baseImageUrl: shotBaseImageUrlForVideo(shotForPreview) ?? shotForPreview.imageUrl,
       videoCfg,
       referencedAssets,
     });
     const firstApi = enriched.apiImageUrls[0] ?? null;
     const enrichedPrompt = applyArkReferenceImagePromptHint(videoCfg, enriched.prompt, firstApi);
+    const matchedList = enriched.matchedAssets.map((a) => ({ id: a.id, name: a.name, type: a.type }));
+    const formattedVideoSlots = enriched.referenceSlots.map((s) => ({
+      role: s.role,
+      name: s.name,
+      id: s.id,
+      assetType: s.assetType,
+      storageUrl: s.storageUrl,
+      resolvedUrl: s.resolvedUrl,
+      sendable: s.sendable,
+      inApiPayload: !!(s.resolvedUrl && enriched.apiImageUrls.includes(s.resolvedUrl)),
+    }));
     res.json({
+      defaultBasePrompt: defaultBase,
       basePrompt: base,
+      enrichedBasePrompt,
       /** 含【参考图附件】短说明，不含方舟「首帧参考图」系统前缀 */
       textPayload: enriched.prompt,
       /** 方舟等路径下 content 中 text 段最终值；非方舟时与 textPayload 相同 */
       enrichedPrompt,
-      matchedAssets: enriched.matchedAssets.map((a) => ({ id: a.id, name: a.name, type: a.type })),
-      referenceSlots: enriched.referenceSlots.map((s) => ({
-        role: s.role,
-        name: s.name,
-        id: s.id,
-        assetType: s.assetType,
-        storageUrl: s.storageUrl,
-        resolvedUrl: s.resolvedUrl,
-        sendable: s.sendable,
-        inApiPayload: !!(s.resolvedUrl && enriched.apiImageUrls.includes(s.resolvedUrl)),
-      })),
+      enrichedText: enrichedPrompt,
+      matchedAssets: matchedList,
+      matched: matchedList,
+      referenceSlots: formattedVideoSlots,
+      slots: formattedVideoSlots,
       apiImageUrls: enriched.apiImageUrls,
+      apiUrls: enriched.apiImageUrls,
       videoAspect: p.videoAspect,
       /** 将随视频 API 请求体发送的整秒时长（与 textPayload 分离） */
       durationSeconds: enriched.durationSeconds ?? null,
@@ -533,7 +680,7 @@ export function registerApiRoutes(app: express.Application): void {
 
   app.post("/api/projects/:id/storyboards/:shotId/image-prompt-preview", async (req, res) => {
     if (!verifyAuth(req, res)) return;
-    const id = req.params.id;
+    const id = String(req.params.id);
     const p = await getProjectOr404(id, res);
     if (!p) return;
     const shot = p.storyboards.find((s) => s.id === req.params.shotId);
@@ -545,37 +692,46 @@ export function registerApiRoutes(app: express.Application): void {
     if (!body) return;
     const cfg = await readConfig();
     const aggregateAssets = cfg.video?.aggregateAssets !== false;
-    const basePrompt = resolveStoryboardImageVisualBase(shot, body.promptOverride);
+    const promptOverride = body.promptOverride?.trim() || body.imagePrompt?.trim();
+    const basePrompt = resolveStoryboardImageVisualBase(shot, promptOverride);
+    const defaultBasePrompt = resolveStoryboardImageVisualBase(shot, undefined, { ignoreImagePrompt: true });
+    const enrichedBasePrompt = enrichStoryboardImageVisualBase(shot, promptOverride || defaultBasePrompt);
     const fullPrompt = buildStoryboardImageGenerationPrompt(p, shot, {
       aggregateAssets,
-      imagePromptOverride: body.promptOverride,
+      imagePromptOverride: promptOverride,
     });
     const ordered = orderedAssetsForStoryboardVisual(p, shot);
     const matchedAssets = ordered.map((a) => ({ id: a.id, name: a.name, type: a.type }));
     const { apiImageUrls, referenceSlots } = await collectStoryboardImageReferenceDetails(p, shot);
+    const formattedSlots = referenceSlots.map((s) => ({
+      role: s.role,
+      name: s.name,
+      id: s.id,
+      assetType: s.assetType,
+      storageUrl: s.storageUrl,
+      resolvedUrl: s.resolvedUrl,
+      resolvedUrlPreview: s.resolvedUrlPreview,
+      sendable: s.sendable,
+      inApiPayload: s.inApiPayload,
+    }));
     res.json({
+      defaultBasePrompt,
       basePrompt,
+      enrichedBasePrompt,
       fullPrompt,
       matchedAssets,
-      referenceSlots: referenceSlots.map((s) => ({
-        role: s.role,
-        name: s.name,
-        id: s.id,
-        assetType: s.assetType,
-        storageUrl: s.storageUrl,
-        resolvedUrl: s.resolvedUrl,
-        resolvedUrlPreview: s.resolvedUrlPreview,
-        sendable: s.sendable,
-        inApiPayload: s.inApiPayload,
-      })),
+      matched: matchedAssets,
+      referenceSlots: formattedSlots,
+      slots: formattedSlots,
       apiImageUrls,
+      apiUrls: apiImageUrls,
       storyboardImageSize: p.storyboardImageSize,
     });
   });
 
   app.post("/api/projects/:id/videos/run-once", async (req, res) => {
     if (!verifyAuth(req, res)) return;
-    const id = req.params.id;
+    const id = String(req.params.id);
     const p = await getProjectOr404(id, res);
     if (!p) return;
     const body = parseBody(videoRunOnceBody, req.body ?? {}, res);
@@ -627,6 +783,133 @@ export function registerApiRoutes(app: express.Application): void {
     });
   });
 
+  app.post(["/api/projects/:id/shots/:shotId/tts", "/api/projects/:id/storyboards/:shotId/tts"], async (req, res) => {
+    if (!verifyAuth(req, res)) return;
+    const id = String(req.params.id);
+    const shotId = String(req.params.shotId);
+    const p = await getProjectOr404(id, res);
+    if (!p) return;
+    const body = parseBody(shotTtsBody, req.body ?? {}, res);
+    if (!body) return;
+    try {
+      const result = await generateShotAudio(id, shotId, {
+        text: body.text,
+        model: body.model,
+        voice: body.voice,
+      });
+      const refreshed = await store.get(id);
+      res.json({ ok: true, audioUrl: result.audioUrl, project: refreshed ?? p });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      sendError(res, 500, msg);
+    }
+  });
+
+  app.post(["/api/projects/:id/shots/:shotId/remux-video", "/api/projects/:id/storyboards/:shotId/remux-video"], async (req, res) => {
+    if (!verifyAuth(req, res)) return;
+    const id = String(req.params.id);
+    const shotId = String(req.params.shotId);
+    const p = await getProjectOr404(id, res);
+    if (!p) return;
+    const shot = p.storyboards.find((s) => s.id === shotId);
+    if (!shot) {
+      notFound(res, "shot not found");
+      return;
+    }
+
+    // 寻找本镜最新的已完成视频任务（过滤掉生图任务，确保是 .mp4 视频）
+    const job = [...p.videoJobs].reverse().find((j) =>
+      (j.shotId === shot.id || j.shotIndex === shot.index) &&
+      j.status === "done" &&
+      Boolean(j.resultUrl) &&
+      (j.resultUrl!.includes("/videos/") || j.resultUrl!.endsWith(".mp4"))
+    );
+    if (!job || !job.resultUrl) {
+      sendError(res, 400, "本镜尚未生成可用视频，请先生成视频后再融合配乐与对白");
+      return;
+    }
+
+    try {
+      const cleanUrl = job.resultUrl.split("?")[0]!;
+      const muxRes = await tryMuxAudioIntoVideo(id, shot.id, cleanUrl);
+      const cacheBustUrl = `${muxRes.videoUrl.split("?")[0]}?t=${Date.now()}`;
+      job.resultUrl = cacheBustUrl;
+      await store.save(p);
+      const refreshed = await store.get(id);
+      res.json({ ok: true, videoUrl: cacheBustUrl, muxed: muxRes.muxed, project: refreshed ?? p });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      sendError(res, 500, `融合音画失败: ${msg}`);
+    }
+  });
+
+  app.post("/api/projects/:id/remux-all-videos", async (req, res) => {
+    if (!verifyAuth(req, res)) return;
+    const id = String(req.params.id);
+    const p = await getProjectOr404(id, res);
+    if (!p) return;
+
+    let remuxedCount = 0;
+    const now = Date.now();
+    for (const shot of p.storyboards) {
+      const job = [...p.videoJobs].reverse().find((j) =>
+        (j.shotId === shot.id || j.shotIndex === shot.index) &&
+        j.status === "done" &&
+        Boolean(j.resultUrl) &&
+        (j.resultUrl!.includes("/videos/") || j.resultUrl!.endsWith(".mp4"))
+      );
+      if (job && job.resultUrl) {
+        try {
+          const cleanUrl = job.resultUrl.split("?")[0]!;
+          const muxRes = await tryMuxAudioIntoVideo(id, shot.id, cleanUrl);
+          if (muxRes.muxed) {
+            job.resultUrl = `${muxRes.videoUrl.split("?")[0]}?t=${now}`;
+            remuxedCount++;
+          }
+        } catch (err) {
+          logger.warn("全镜重融单个视频跳过异常", { shotId: shot.id, error: String(err) });
+        }
+      }
+    }
+    await store.save(p);
+    const refreshed = await store.get(id);
+    res.json({ ok: true, remuxedCount, project: refreshed ?? p });
+  });
+
+  app.get("/api/projects/:id/bgm", async (req, res) => {
+    const id = String(req.params.id);
+    const p = await getProjectOr404(id, res);
+    if (!p) return;
+    res.json({
+      presets: BGM_PRESETS.map((b) => ({
+        ...b,
+        url: `/api/files/bgm/${b.filename}`,
+      })),
+      custom: listProjectBgms(id),
+    });
+  });
+
+  app.post("/api/projects/:id/bgm/upload", async (req, res) => {
+    if (!verifyAuth(req, res)) return;
+    const id = String(req.params.id);
+    const p = await getProjectOr404(id, res);
+    if (!p) return;
+    const { filename, dataUrl } = req.body ?? {};
+    if (!filename || !dataUrl || typeof dataUrl !== "string") {
+      badRequest(res, "filename and dataUrl are required");
+      return;
+    }
+    const m = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+    const base64Data = m ? m[2]! : dataUrl;
+    const buffer = Buffer.from(base64Data, "base64");
+    if (!buffer.length) {
+      badRequest(res, "empty audio payload");
+      return;
+    }
+    const saved = saveProjectBgmFile(id, filename, buffer);
+    res.json({ ok: true, file: saved });
+  });
+
   app.post("/api/projects/:id/polish", async (req, res) => {
     if (!verifyAuth(req, res)) return;
     const data = parseBody(polishBody, req.body ?? {}, res);
@@ -655,7 +938,7 @@ export function registerApiRoutes(app: express.Application): void {
     if (!verifyAuth(req, res)) return;
     const data = parseBody(regenerateChapterBody, req.body ?? {}, res);
     if (!data) return;
-    const id = req.params.id;
+    const id = String(req.params.id);
     if (isPipelineRunning(id)) {
       const p = await store.get(id);
       conflict(res, "pipeline running", {
@@ -686,7 +969,7 @@ export function registerApiRoutes(app: express.Application): void {
 
   app.post("/api/projects/:id/pipeline/run", async (req, res) => {
     if (!verifyAuth(req, res)) return;
-    const id = req.params.id;
+    const id = String(req.params.id);
     const p = await getProjectOr404(id, res);
     if (!p) return;
     // 以内存真实运行态为准；DB 若遗留 running，则先自动纠偏后再启动
@@ -736,7 +1019,7 @@ export function registerApiRoutes(app: express.Application): void {
 
   app.post("/api/projects/:id/pipeline/cancel", async (req, res) => {
     if (!verifyAuth(req, res)) return;
-    const id = req.params.id;
+    const id = String(req.params.id);
     const p = await getProjectOr404(id, res);
     if (!p) return;
     requestCancelPipeline(id);
@@ -745,7 +1028,7 @@ export function registerApiRoutes(app: express.Application): void {
 
   app.post("/api/projects/:id/jobs", async (req, res) => {
     if (!verifyAuth(req, res)) return;
-    const id = req.params.id;
+    const id = String(req.params.id);
     const p = await getProjectOr404(id, res);
     if (!p) return;
     const data = parseBody(jobEnqueueBody, req.body ?? {}, res);
@@ -768,7 +1051,7 @@ export function registerApiRoutes(app: express.Application): void {
 
   app.post("/api/projects/:id/jobs/run", async (req, res) => {
     if (!verifyAuth(req, res)) return;
-    const id = req.params.id;
+    const id = String(req.params.id);
     const p = await getProjectOr404(id, res);
     if (!p) return;
     const data = parseBody(jobRunBody, req.body ?? {}, res);
@@ -783,7 +1066,7 @@ export function registerApiRoutes(app: express.Application): void {
   });
 
   app.get("/api/projects/:id/events", async (req, res) => {
-    const id = req.params.id;
+    const id = String(req.params.id);
     const p = await store.get(id);
     if (!p) {
       res.status(404).end();

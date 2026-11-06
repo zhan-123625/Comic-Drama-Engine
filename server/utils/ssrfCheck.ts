@@ -103,7 +103,7 @@ export async function validateUrlSafety(imageUrl: string): Promise<SsrfCheckResu
   }
 
   // DNS resolution check - defend against DNS rebinding by checking ALL resolved IPs
-  let resolvedIps: string[];
+  let resolvedIps: string[] = [];
   try {
     // dns.resolve 返回所有 A/AAAA 记录，防止攻击者通过单条公网 IP 绕过检查
     const [ipv4Results, ipv6Results] = await Promise.allSettled([dns.resolve4(hostname), dns.resolve6(hostname)]);
@@ -112,7 +112,18 @@ export async function validateUrlSafety(imageUrl: string): Promise<SsrfCheckResu
       ...(ipv6Results.status === "fulfilled" ? ipv6Results.value : []),
     ];
   } catch {
-    return { safe: false, reason: "DNS resolution failed" };
+    /* fallback to lookup */
+  }
+
+  // 兜底：在 Windows 或代理/TUN 环境下，c-ares UDP DNS 解析可能因网络配置偶发无响应或超时，
+  // 此时回退至操作系统级 getaddrinfo (dns.lookup) 获取系统解析结果，确保模型返回的合法云存储 URL 能正常下载
+  if (resolvedIps.length === 0) {
+    try {
+      const lookupResults = await dns.lookup(hostname, { all: true });
+      resolvedIps = lookupResults.map((r) => r.address);
+    } catch {
+      return { safe: false, reason: "DNS resolution failed" };
+    }
   }
 
   if (resolvedIps.length === 0) {

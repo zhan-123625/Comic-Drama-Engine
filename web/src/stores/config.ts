@@ -17,6 +17,7 @@ export type VolcenginePresetsPayload = {
   }>;
   text: Array<{ id: string; label: string; model: string; baseUrl: string; capabilityLine: string }>;
   image: Array<{ id: string; label: string; model: string; baseUrl: string; capabilityLine: string }>;
+  tts?: Array<{ id: string; label: string; model: string; voiceName: string; gender: string; appNote: string }>;
 };
 
 export type BailianPresetsPayload = {
@@ -33,6 +34,7 @@ export type BailianPresetsPayload = {
   }>;
   text: Array<{ id: string; label: string; model: string; baseUrl: string; capabilityLine: string }>;
   image: Array<{ id: string; label: string; model: string; baseUrl: string; capabilityLine: string }>;
+  tts?: Array<{ id: string; label: string; model: string; voiceName: string; gender: string; appNote: string }>;
 };
 
 export const AGENT_PROMPT_DEFAULTS = {
@@ -113,6 +115,20 @@ export const useConfigStore = defineStore("config", () => {
       if (cfgDraft.value.video.multiReferenceImages == null) cfgDraft.value.video.multiReferenceImages = true;
       if (cfgDraft.value.video.arkWatermark == null) cfgDraft.value.video.arkWatermark = false;
       if (cfgDraft.value.video.arkGenerateAudio == null) cfgDraft.value.video.arkGenerateAudio = true;
+    }
+    if (!cfgDraft.value.tts) {
+      cfgDraft.value.tts = {
+        provider: "dashscope",
+        model: "sambert-zhixiao-v1",
+        apiKey: "",
+        voice: "",
+        enabled: true,
+        autoMuxVideo: true,
+      };
+    } else {
+      if (!cfgDraft.value.tts.model) cfgDraft.value.tts.model = "sambert-zhixiao-v1";
+      if (cfgDraft.value.tts.enabled == null) cfgDraft.value.tts.enabled = true;
+      if (cfgDraft.value.tts.autoMuxVideo == null) cfgDraft.value.tts.autoMuxVideo = true;
     }
     if (!cfgDraft.value.ui) cfgDraft.value.ui = { autoSave: false, runnerDelayMs: 600, pipelineAllowPartial: false };
     if (cfgDraft.value.ui.autoSave == null) cfgDraft.value.ui.autoSave = false;
