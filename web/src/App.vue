@@ -12,6 +12,8 @@ import SettingsModal from "./components/SettingsModal.vue";
 import CreateProjectForm from "./components/CreateProjectForm.vue";
 import ProjectOverview from "./components/ProjectOverview.vue";
 import "./global-styles.css";
+import "./glass-styles.css";
+import PersonalCenter from "./components/PersonalCenter.vue";
 import SourceEditor from "./components/SourceEditor.vue";
 import AssetLibrary from "./components/AssetLibrary.vue";
 import StoryboardView from "./views/StoryboardView.vue";
@@ -66,6 +68,7 @@ const {
 
 // ─── Composables ────────────────────────────────────────────────
 function workspaceScrollKeyFrom(side: SideTabKey, projId: string | null, create: boolean, menu: MenuKey): string {
+  if (side === "profile") return "side:profile";
   if (side === "settings") return "side:settings";
   if (side === "projects" && create) return "projects:create";
   if (side === "projects" && !projId) return "projects:list";
@@ -105,6 +108,17 @@ const stats = computed(() => {
   };
 });
 
+function moveGlassLight(event: PointerEvent) {
+  if (ui.interfaceStyle !== "glass") return;
+  const surface = (event.target as HTMLElement).closest<HTMLElement>(
+    ".card, .topbar, .side-tab-btn, .big-menu-btn, .profile-entry",
+  );
+  if (!surface) return;
+  const bounds = surface.getBoundingClientRect();
+  surface.style.setProperty("--light-x", `${((event.clientX - bounds.left) / bounds.width) * 100}%`);
+  surface.style.setProperty("--light-y", `${((event.clientY - bounds.top) / bounds.height) * 100}%`);
+}
+
 // ─── 根组件函数 ────────────────────────────────────────────────
 function onClearProjectSelection() {
   selectedId.value = null;
@@ -114,7 +128,7 @@ function onSelectSideTab(t: SideTabKey) {
   activeSideTab.value = t;
   showingCreateProject.value = false;
   if (t === "settings") activeMenu.value = "settings";
-  else if (t === "projects") activeMenu.value = "overview";
+  else activeMenu.value = "overview";
 }
 async function openCreateProjectPage() {
   activeSideTab.value = "projects";
@@ -125,7 +139,7 @@ async function openCreateProjectPage() {
   createProjectFormRef.value?.focus();
 }
 async function flushCurrentMenu() {
-  if (showingCreateProject.value) return;
+  if (showingCreateProject.value || activeSideTab.value === "profile") return;
   if (activeMenu.value === "settings") {
     await saveRemoteConfig();
     return;
@@ -201,7 +215,27 @@ void loadProjects();
 </script>
 
 <template>
-  <div class="app-shell" :class="{ 'app-shell--project-drilldown': sidebarProjectDrilldown }">
+  <div
+    class="app-shell"
+    :class="{ 'app-shell--project-drilldown': sidebarProjectDrilldown }"
+    @pointermove="moveGlassLight"
+  >
+    <svg
+      class="glass-filter-defs"
+      xmlns="http://www.w3.org/2000/svg"
+      width="0"
+      height="0"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <defs>
+        <filter id="comic-glass-refraction" x="0%" y="0%" width="100%" height="100%" color-interpolation-filters="sRGB">
+          <feTurbulence type="fractalNoise" baseFrequency="0.008 0.018" numOctaves="1" seed="7" result="noise" />
+          <feGaussianBlur in="noise" stdDeviation="3" result="softNoise" />
+          <feDisplacementMap in="SourceGraphic" in2="softNoise" scale="12" xChannelSelector="R" yChannelSelector="G" />
+        </filter>
+      </defs>
+    </svg>
     <SidebarPanel
       :busy="busy"
       :projects="projects"
@@ -228,12 +262,14 @@ void loadProjects();
             {{
               activeSideTab === "settings"
                 ? "全局设置"
-                : showingCreateProject
-                  ? "新建项目"
-                  : (selected?.name ?? "项目列表")
+                : activeSideTab === "profile"
+                  ? "个人中心"
+                  : showingCreateProject
+                    ? "新建项目"
+                    : (selected?.name ?? "项目列表")
             }}
           </h2>
-          <p v-if="selected" class="hint">项目 ID：{{ selected.id }}</p>
+          <p v-if="selected && activeSideTab === 'projects'" class="hint">项目 ID：{{ selected.id }}</p>
         </div>
         <div class="actions">
           <button v-if="activeSideTab === 'projects'" class="btn" type="button" :disabled="busy" @click="loadProjects">
@@ -248,17 +284,45 @@ void loadProjects();
           >
             新建项目
           </button>
-          <button v-if="selected" class="btn danger" type="button" :disabled="busy" @click="deleteProject(selected.id)">
+          <button
+            v-if="selected && activeSideTab === 'projects'"
+            class="btn danger"
+            type="button"
+            :disabled="busy"
+            @click="deleteProject(selected.id)"
+          >
             删除项目
           </button>
-          <button v-if="selected" class="btn" type="button" :disabled="busy" @click="refreshProjectAndBustImages">
+          <button
+            v-if="selected && activeSideTab === 'projects'"
+            class="btn"
+            type="button"
+            :disabled="busy"
+            @click="refreshProjectAndBustImages"
+          >
             刷新
           </button>
-          <button class="btn primary" type="button" :disabled="busy" @click="flushCurrentMenu">保存当前页</button>
+          <button
+            v-if="activeSideTab !== 'profile'"
+            class="btn primary"
+            type="button"
+            :disabled="busy"
+            @click="flushCurrentMenu"
+          >
+            保存当前页
+          </button>
         </div>
       </header>
 
       <div ref="workspaceScrollEl" class="workspace-scroll">
+        <PersonalCenter
+          v-if="activeSideTab === 'profile'"
+          :projects="projects"
+          :projects-load-error="projectsLoadError"
+          @open-project="openProjectDetail"
+          @create="openCreateProjectPage"
+          @refresh="loadProjects"
+        />
         <section v-if="activeSideTab === 'projects' && !showingCreateProject && !selected" class="card">
           <h3>项目列表</h3>
           <p v-if="projectsLoadError" class="err">{{ projectsLoadError }}</p>
@@ -486,5 +550,21 @@ body {
 
 #app {
   height: 100%;
+}
+</style>
+
+<style>
+@media (max-width: 960px) {
+  html,
+  body {
+    overflow: auto;
+    height: auto;
+  }
+  #app {
+    min-height: 100dvh;
+  }
+  .app-shell.app-shell--project-drilldown {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 </style>

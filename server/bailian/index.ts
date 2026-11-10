@@ -6,7 +6,10 @@ export * from "../providers/bailianManagedAgent.js";
 export * from "../bailianPresets.js";
 
 import BailianPkg from "@alicloud/bailian20231229";
-import { $OpenApiUtil } from "@alicloud/openapi-core";
+import { createRequire } from "node:module";
+// Resolve the SDK dependency from the SDK itself; npm may nest it rather than hoist it.
+const sdkRequire = createRequire(createRequire(import.meta.url).resolve("@alicloud/bailian20231229"));
+const { $OpenApiUtil } = sdkRequire("@alicloud/openapi-core");
 
 export type Bailian20231229 = any;
 

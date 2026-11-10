@@ -1,9 +1,17 @@
 type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
 import { Agent, fetch as undiciFetch } from "undici";
+import {
+  dashScopeUrl,
+  isDashScopeEndpoint,
+  resolveDashScopeTextUrl,
+  redactProviderText,
+  providerErrorMessage,
+} from "./dashscopeCompat.js";
 import { formatErrorMessage } from "../errorFormat.js";
 import { logger } from "../logger.js";
 import { redactRequestHeaders, sanitizeModelRequestBody } from "../modelRequestSnapshot.js";
 import type { ModelApiCallSnapshot } from "../types.js";
+import { generateDashScopeMultimodalImage } from "./dashscopeImage.js";
 import type { GenerateImageResult } from "../imagePersist.js";
 import { sleep } from "../utils/sleep.js";
 import { compositeReferenceImages } from "../utils/compositeImages.js";
@@ -108,13 +116,13 @@ export async function chatComplete(opts: {
   _continuationDepth?: number;
 }) {
   const baseUrl = must(opts.baseUrl, "text.baseUrl");
-  const apiKey = must(opts.apiKey, "text.apiKey");
+  const apiKey = must(opts.apiKey, "text.apiKey").trim();
   const model = must(opts.model, "text.model");
   const retryTimes = parseTimeoutMs("MY_APP_HTTP_RETRY_TIMES", 2);
   const retryBaseDelayMs = parseTimeoutMs("MY_APP_HTTP_RETRY_BASE_DELAY_MS", 800);
   const maxTokens = opts.max_tokens ?? parseTimeoutMs("MY_APP_LLM_MAX_TOKENS", 8192);
 
-  const endpointUrl = resolveEndpointUrl(baseUrl, "/chat/completions");
+  const endpointUrl = resolveDashScopeTextUrl(baseUrl) ?? resolveEndpointUrl(baseUrl, "/chat/completions");
   let r: UndiciHttpResponse;
   for (let attempt = 0; ; attempt++) {
     try {
@@ -129,12 +137,12 @@ export async function chatComplete(opts: {
           messages: opts.messages,
           temperature: opts.temperature ?? 0.4,
           max_tokens: maxTokens,
-          enable_thinking: process.env.MY_APP_ENABLE_THINKING === "1" || process.env.MY_APP_ENABLE_THINKING === "true",
+          ...(isDashScopeEndpoint(baseUrl) ? { enable_thinking: false } : {}),
         }),
       });
       break;
     } catch (e) {
-      const detail = formatErrorMessage(e, 800);
+      const detail = redactProviderText(formatErrorMessage(e, 800), apiKey);
       const canRetry = isTransientNetworkError(detail) && attempt < retryTimes;
       logger.warn("text model fetch failed", {
         model,
@@ -161,7 +169,7 @@ export async function chatComplete(opts: {
   if (!r.ok) {
     const t = await r.text().catch(() => "");
     logger.warn("text model request failed", { status: r.status, model, baseUrl });
-    throw new Error(`文本模型请求失败: ${r.status} ${t}`.slice(0, 600));
+    throw new Error(`文本模型请求失败: ${r.status} ${providerErrorMessage(t, apiKey)}`.slice(0, 800));
   }
   const j = (await r.json()) as {
     choices?: Array<{
@@ -284,7 +292,7 @@ export function toDashScopeImageSize(size: string | undefined): string {
 }
 
 function isDashScopeImage(baseUrl: string): boolean {
-  return baseUrl.includes("dashscope.aliyuncs.com");
+  return isDashScopeEndpoint(baseUrl);
 }
 
 export async function uploadDashScopeImageOss(
@@ -293,11 +301,12 @@ export async function uploadDashScopeImageOss(
   buffer: Buffer,
   filename = "ref.png",
   mime = "image/png",
+  baseUrl = "https://dashscope.aliyuncs.com",
 ): Promise<string> {
   const cleanKey = apiKey.trim();
   // 1. Try native DashScope upload policy HTTP API
   try {
-    const certUrl = `https://dashscope.aliyuncs.com/api/v1/uploads?action=getPolicy&model=${encodeURIComponent(model)}`;
+    const certUrl = `${dashScopeUrl(baseUrl, "/api/v1/uploads")}?action=getPolicy&model=${encodeURIComponent(model)}`;
     const certRes = await httpFetch(certUrl, {
       method: "GET",
       headers: {
@@ -333,43 +342,14 @@ export async function uploadDashScopeImageOss(
       }
     }
   } catch (e) {
-    logger.warn("dashscope native image oss upload failed", { err: String(e) });
+    logger.warn("dashscope native image oss upload failed", { err: redactProviderText(e, cleanKey) });
   }
 
-  // 2. Fallback to python check_and_upload_local if available
-  try {
-    const os = await import("os");
-    const fs = await import("fs");
-    const path = await import("path");
-    const { execFile } = await import("child_process");
-    const { promisify } = await import("util");
-    const execFileAsync = promisify(execFile);
-    const tmpFile = path.join(os.tmpdir(), `ds_img_ref_${Date.now()}_${filename}`);
-    fs.writeFileSync(tmpFile, buffer);
-    try {
-      const pyScript =
-        "import sys\nfrom dashscope.utils.oss_utils import check_and_upload_local\nis_up, url, cert = check_and_upload_local(sys.argv[1], sys.argv[2], sys.argv[3])\nprint(url)\n";
-      const { stdout } = await execFileAsync("python", ["-c", pyScript, model, tmpFile, cleanKey]);
-      const ossUrl = stdout.trim();
-      if (ossUrl.startsWith("oss://")) {
-        logger.info("dashscope image reference uploaded to oss via python", { ossUrl });
-        return ossUrl;
-      }
-    } finally {
-      try {
-        fs.unlinkSync(tmpFile);
-      } catch {
-        /* ignore */
-      }
-    }
-  } catch (pyErr) {
-    logger.warn("dashscope python oss upload for image failed", { err: String(pyErr) });
-  }
-
-  return "";
+  throw new Error("无法在当前配置服务上传参考图，请配置公网图床或检查上传接口");
 }
 
 async function generateImageDashScope(opts: {
+  baseUrl: string;
   apiKey: string;
   model: string;
   prompt: string;
@@ -378,13 +358,10 @@ async function generateImageDashScope(opts: {
   refStrength?: number;
   promptExtend?: boolean;
 }): Promise<GenerateImageResult> {
-  let model = opts.model.trim();
-  if (model === "qwen-image") {
-    model = "wanx2.1-t2i-plus";
-  }
+  const model = opts.model.trim();
 
   const dsSize = toDashScopeImageSize(opts.size);
-  const createEndpoint = "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis";
+  const createEndpoint = dashScopeUrl(opts.baseUrl, "/api/v1/services/aigc/text2image/image-synthesis");
   const reqHeaders: Record<string, string> = {
     "Content-Type": "application/json",
     Authorization: `Bearer ${opts.apiKey}`,
@@ -402,7 +379,14 @@ async function generateImageDashScope(opts: {
         const m = composited.match(/^data:([^;]+);base64,(.+)$/i);
         if (m && m[2]) {
           const buf = Buffer.from(m[2], "base64");
-          const ossUrl = await uploadDashScopeImageOss(opts.apiKey, model, buf, "ref_composite.png", m[1] || "image/png");
+          const ossUrl = await uploadDashScopeImageOss(
+            opts.apiKey,
+            model,
+            buf,
+            "ref_composite.png",
+            m[1] || "image/png",
+            opts.baseUrl,
+          );
           if (ossUrl) {
             refImg = ossUrl;
           }
@@ -478,24 +462,30 @@ async function generateImageDashScope(opts: {
       body: JSON.stringify(bodyUsed),
     });
   } catch (e) {
-    const detail = formatErrorMessage(e, 800);
+    const detail = redactProviderText(formatErrorMessage(e, 800), opts.apiKey);
     logger.warn("DashScope image task submission failed", { model, detail });
     throw new Error(`通义万相生图任务提交失败：${detail}`);
   }
 
   if (!r.ok) {
     const t = await r.text().catch(() => "");
-    logger.warn("DashScope image request rejected", { status: r.status, model, detail: t });
-    throw new Error(`通义万相生图接口拒绝: ${r.status} ${t}`.slice(0, 600));
+    logger.warn("DashScope image request rejected", {
+      status: r.status,
+      model,
+      detail: providerErrorMessage(t, opts.apiKey),
+    });
+    throw new Error(`通义万相生图接口拒绝: ${r.status} ${providerErrorMessage(t, opts.apiKey)}`.slice(0, 600));
   }
 
   const createJson = (await r.json()) as { output?: { task_id?: string; message?: string } };
   const taskId = createJson?.output?.task_id;
   if (!taskId) {
-    throw new Error(`通义万相生图未返回 task_id: ${JSON.stringify(createJson)}`.slice(0, 400));
+    throw new Error(
+      `通义万相生图未返回 task_id: ${redactProviderText(JSON.stringify(createJson), opts.apiKey)}`.slice(0, 400),
+    );
   }
 
-  const pollUrl = `https://dashscope.aliyuncs.com/api/v1/tasks/${taskId}`;
+  const pollUrl = dashScopeUrl(opts.baseUrl, `/api/v1/tasks/${encodeURIComponent(taskId)}`);
   const pollHeaders = { Authorization: `Bearer ${opts.apiKey}` };
   const maxPolls = 45;
 
@@ -509,7 +499,13 @@ async function generateImageDashScope(opts: {
       continue;
     }
 
-    if (!pollRes.ok) continue;
+    if (!pollRes.ok) {
+      if ([400, 401, 403, 404].includes(pollRes.status))
+        throw new Error(
+          `通义万相生图轮询失败: ${pollRes.status} ${providerErrorMessage(await pollRes.text(), opts.apiKey)}`,
+        );
+      continue;
+    }
 
     const pollJson = (await pollRes.json()) as {
       output?: {
@@ -529,8 +525,8 @@ async function generateImageDashScope(opts: {
       return { kind: "url" as const, url, modelApiCall };
     }
 
-    if (status === "FAILED") {
-      const errMsg = pollJson.output?.message || pollJson.output?.code || "未知错误";
+    if (["FAILED", "CANCELED", "CANCELLED"].includes(status ?? "")) {
+      const errMsg = redactProviderText(pollJson.output?.message || pollJson.output?.code || "未知错误", opts.apiKey);
       logger.warn("DashScope image synthesis task failed", { model, taskId, errMsg });
       throw new Error(`通义万相生图任务执行失败: ${errMsg}`);
     }
@@ -555,13 +551,17 @@ export async function generateImage(opts: {
   promptExtend?: boolean;
 }) {
   const baseUrl = must(opts.baseUrl, "image.baseUrl");
-  const apiKey = must(opts.apiKey, "image.apiKey");
+  const apiKey = must(opts.apiKey, "image.apiKey").trim();
   const model = must(opts.model, "image.model");
   const minPixels = 3_686_400;
   const requestedSize = opts.size ?? "1024x1024";
 
   if (isDashScopeImage(baseUrl)) {
+    if (/^qwen-image/i.test(model) || new URL(baseUrl).pathname.includes("/multimodal-generation/")) {
+      return generateDashScopeMultimodalImage({ ...opts, apiKey }, httpFetch);
+    }
     return generateImageDashScope({
+      baseUrl,
       apiKey,
       model,
       prompt: opts.prompt,
@@ -630,7 +630,7 @@ export async function generateImage(opts: {
       body: JSON.stringify(bodyUsed),
     });
   } catch (e) {
-    const detail = formatErrorMessage(e, 800);
+    const detail = redactProviderText(formatErrorMessage(e, 800), apiKey);
     logger.warn("image model fetch failed", { model, baseUrl, endpoint: shortEndpointHint(imageEndpoint), detail });
     throw new Error(
       `生图接口连接失败（${shortEndpointHint(imageEndpoint)}）：${detail}。请检查 image Base URL 与网络。`.slice(
@@ -659,7 +659,7 @@ export async function generateImage(opts: {
             body: JSON.stringify(bodyUsed),
           });
         } catch (e) {
-          const detail = formatErrorMessage(e, 800);
+          const detail = redactProviderText(formatErrorMessage(e, 800), apiKey);
           logger.warn("image model fetch failed (retry)", {
             model,
             baseUrl,
@@ -693,7 +693,7 @@ export async function generateImage(opts: {
           hint = `【排查提示：生图接口 ${shortEndpointHint(imageEndpoint)} 返回 404，请确认服务商是否支持 /images/generations】`;
         }
       }
-      throw new Error(`生图请求失败: ${r.status} ${hint} ${t}`.slice(0, 800));
+      throw new Error(`生图请求失败: ${r.status} ${hint} ${providerErrorMessage(t, apiKey)}`.slice(0, 800));
     }
   }
   if (debugLlm)

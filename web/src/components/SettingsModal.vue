@@ -99,7 +99,7 @@ function onVideoArkResolutionSelect(ev: Event) {
 </script>
 
 <template>
-  <section class="stack">
+  <section class="stack settings-view">
     <article class="card">
       <h3>模型与服务配置</h3>
       <p class="hint">

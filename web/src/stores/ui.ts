@@ -1,4 +1,4 @@
-import { ref } from "vue";
+import { ref, watch } from "vue";
 import { defineStore } from "pinia";
 import type { MenuKey, SideTabKey } from "../types";
 
@@ -7,6 +7,24 @@ export const useUiStore = defineStore("ui", () => {
   const activeSideTab = ref<SideTabKey>("projects");
   const showingCreateProject = ref(false);
   const busy = ref(false);
+  const interfaceStyle = ref<"default" | "glass">("default");
+  try {
+    if (localStorage.getItem("comic-drama.interface-style") === "glass") interfaceStyle.value = "glass";
+  } catch {
+    /* Storage can be disabled in private browsing. */
+  }
+  watch(
+    interfaceStyle,
+    (style) => {
+      document.documentElement.dataset.interfaceStyle = style;
+      try {
+        localStorage.setItem("comic-drama.interface-style", style);
+      } catch {
+        /* Keep session preference. */
+      }
+    },
+    { immediate: true },
+  );
   const logs = ref<string[]>([]);
   const polishErr = ref("");
 
@@ -33,6 +51,7 @@ export const useUiStore = defineStore("ui", () => {
   }
 
   return {
+    interfaceStyle,
     activeMenu,
     activeSideTab,
     showingCreateProject,

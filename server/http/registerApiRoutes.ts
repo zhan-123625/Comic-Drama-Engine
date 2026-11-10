@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import express from "express";
 import { store } from "../store.js";
+import { listPortfolioExports } from "../portfolio.js";
 import {
   isPipelineRunning,
   releasePipelineLock,
@@ -197,6 +198,10 @@ export function registerApiRoutes(app: express.Application): void {
     const next = mergeAppConfig(prev, data as AppConfig);
     await writeConfig(next);
     res.json(maskConfig(next));
+  });
+
+  app.get("/api/portfolio/exports", async (_req, res) => {
+    res.json({ items: await listPortfolioExports(await store.list()) });
   });
 
   app.get("/api/projects", async (_req, res) => {

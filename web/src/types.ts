@@ -135,7 +135,7 @@ export type MenuKey =
   | "video"
   | "jobs"
   | "settings";
-export type SideTabKey = "projects" | "settings";
+export type SideTabKey = "projects" | "settings" | "profile";
 
 export type MenuItem = { key: MenuKey; label: string; hint: string };
 export type SideTabItem = { key: SideTabKey; label: string; hint: string };

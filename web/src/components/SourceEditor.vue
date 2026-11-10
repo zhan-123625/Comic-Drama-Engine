@@ -108,7 +108,6 @@ async function polishField(field: "source" | "script") {
         <aside class="chapter-list">
           <div class="chapter-list-head">
             <strong>章节列表</strong>
-            <span class="hint">{{ pipeline.sourceChapters.length }} 章</span>
           </div>
           <div class="chapter-items">
             <button
@@ -117,10 +116,10 @@ async function polishField(field: "source" | "script") {
               type="button"
               class="chapter-item"
               :class="{ active: pipeline.selectedSourceChapterIdx === i }"
+              :aria-current="pipeline.selectedSourceChapterIdx === i ? 'true' : undefined"
               @click="pipeline.selectedSourceChapterIdx = i"
               @contextmenu="onSourceChapterContextMenu($event, i)"
             >
-              <span class="idx">{{ i + 1 }}</span>
               <span class="title">{{ (c.title || `第${i + 1}章`).trim() }}</span>
             </button>
           </div>
@@ -203,3 +202,53 @@ async function polishField(field: "source" | "script") {
     </article>
   </section>
 </template>
+
+<style scoped>
+.chapter-layout {
+  margin-top: 20px;
+}
+.chapter-list {
+  margin-bottom: 20px;
+  min-width: 0;
+}
+.chapter-list-head {
+  margin-bottom: 12px;
+  line-height: 1.5;
+}
+.chapter-items {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 2px;
+}
+.chapter-item {
+  display: block;
+  max-width: 100%;
+  padding: 9px 14px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: #cbd5e1;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+  text-align: left;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.chapter-item:hover {
+  background: #ffffff0a;
+}
+.chapter-item.active {
+  color: #edf8ff;
+  background: #b1deef12;
+  border-color: #b1deef38;
+}
+.chapter-item:focus-visible {
+  outline: 2px solid #a8d8ec;
+  outline-offset: 2px;
+}
+</style>

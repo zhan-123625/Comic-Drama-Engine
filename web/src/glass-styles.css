@@ -1,0 +1,426 @@
+/* Opt-in skin. Default selectors and component styles remain intact. */
+html[data-interface-style="glass"] {
+  --glass-surface: rgba(31, 44, 60, 0.57);
+  --glass-raised: rgba(70, 89, 106, 0.23);
+  --glass-border: rgba(215, 239, 255, 0.19);
+  --glass-ink: #edf4fa;
+  --glass-muted: #b4c5d4;
+  --glass-accent: #a8d8ec;
+  --studio-card-bg: var(--glass-surface);
+  --studio-card-border: var(--glass-border);
+  --studio-text-main: var(--glass-ink);
+  --studio-text-muted: var(--glass-muted);
+  --anime-card-bg: var(--glass-surface);
+  --anime-card-border: var(--glass-border);
+  --studio-primary: var(--glass-accent);
+  --anime-accent-cyan: var(--glass-accent);
+}
+html[data-interface-style="glass"] .app-shell {
+  background: #101c29;
+  color: var(--glass-ink);
+  isolation: isolate;
+  position: relative;
+}
+html[data-interface-style="glass"] .app-shell::before {
+  content: "";
+  position: fixed;
+  inset: -25%;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse at 16% 28%, #5897a18c 0%, transparent 40%),
+    radial-gradient(ellipse at 77% 10%, #819bae75 0%, transparent 36%),
+    radial-gradient(ellipse at 80% 86%, #59596f8c 0%, transparent 38%),
+    radial-gradient(ellipse at 25% 92%, #2c667977 0%, transparent 40%);
+  filter: blur(30px);
+  animation: glass-drift 24s ease-in-out infinite alternate;
+  will-change: transform;
+}
+/* Background light remains visible through the frosted workspace surfaces. */
+html[data-interface-style="glass"] #app .sidebar {
+  background: rgba(17, 30, 43, 0.5);
+  backdrop-filter: blur(32px) saturate(150%);
+  -webkit-backdrop-filter: blur(32px) saturate(150%);
+  border-right: 1px solid var(--glass-border);
+  box-shadow:
+    1px 0 0 #ffffff0a,
+    10px 0 40px #00000015;
+  padding-top: 24px;
+}
+html[data-interface-style="glass"] #app .brand h1 {
+  background: none;
+  -webkit-text-fill-color: var(--glass-ink);
+  color: var(--glass-ink);
+  filter: none;
+  font-weight: 650;
+}
+html[data-interface-style="glass"] #app .brand-icon {
+  color: #c0e8f5;
+  filter: none;
+}
+html[data-interface-style="glass"] #app .brand-tag {
+  color: #b2c6d5;
+  opacity: 1;
+  font-weight: 500;
+  letter-spacing: 0.09em;
+}
+html[data-interface-style="glass"] #app .brand {
+  margin-bottom: 24px;
+}
+html[data-interface-style="glass"] #app .workspace {
+  padding-top: 24px;
+}
+html[data-interface-style="glass"] #app .topbar {
+  padding: 16px 20px;
+  background: rgba(40, 57, 73, 0.42);
+  border: 1px solid var(--glass-border);
+  border-radius: 22px;
+  backdrop-filter: blur(24px) saturate(140%);
+  -webkit-backdrop-filter: blur(24px) saturate(140%);
+  box-shadow:
+    inset 0 1px 0 #ffffff21,
+    0 8px 28px #00000012;
+  gap: 14px;
+}
+html[data-interface-style="glass"] #app .topbar h2 {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-shadow: none;
+}
+html[data-interface-style="glass"] #app .topbar .actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+html[data-interface-style="glass"] #app :is(.card, .cfg-block, .pipeline-card, .video-timeline-panel) {
+  background: var(--glass-surface);
+  border: 1px solid var(--glass-border);
+  border-radius: 22px;
+  backdrop-filter: blur(24px) saturate(135%);
+  -webkit-backdrop-filter: blur(24px) saturate(135%);
+  box-shadow:
+    inset 0 1px 0 #ffffff24,
+    inset 0 -1px 0 #ffffff06,
+    0 12px 36px #00000017;
+}
+html[data-interface-style="glass"] #app .card:hover {
+  border-color: #d7efff38;
+  box-shadow:
+    inset 0 1px 0 #ffffff24,
+    0 12px 36px #00000017;
+}
+html[data-interface-style="glass"]
+  #app
+  :is(.side-tab-btn, .sidebar-back-btn, .big-menu-btn, .project-item-btn, .profile-entry, .sidebar-drill-project-card) {
+  background: rgba(103, 128, 149, 0.09);
+  border: 1px solid #dbf1ff20;
+  box-shadow: inset 0 1px 0 #ffffff10;
+  color: #c4d1dc;
+  transform: none;
+  transition:
+    background 0.22s ease,
+    border-color 0.22s ease,
+    box-shadow 0.22s ease;
+}
+html[data-interface-style="glass"]
+  #app
+  :is(.side-tab-btn, .sidebar-back-btn, .big-menu-btn, .project-item-btn, .profile-entry):hover {
+  background: #d9efff10;
+  border-color: #dbf1ff40;
+  box-shadow: inset 0 1px 0 #ffffff24;
+  transform: none;
+}
+html[data-interface-style="glass"] #app :is(.side-tab-btn, .big-menu-btn, .project-item-btn, .profile-entry).active {
+  color: #effaff;
+  background: linear-gradient(115deg, #c5ebff30, #e2f7ff10 65%, #b7e7ff20);
+  border-color: #dbf1ff55;
+  box-shadow:
+    inset 0 1px 1px #ffffff55,
+    inset 0 -1px 1px #ffffff13,
+    0 4px 18px #00000017;
+}
+html[data-interface-style="glass"] #app .project-box {
+  background: #15273725;
+  border-color: #d7efff1a;
+}
+html[data-interface-style="glass"] #app :is(.menu-section-label, .project-box-title, .sidebar-drill-badge) {
+  color: #b5cbdc;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+html[data-interface-style="glass"] #app :is(.menu-btn-title, .side-tab-label, .project-select .name) {
+  font-weight: 550;
+  letter-spacing: 0;
+}
+html[data-interface-style="glass"] #app :is(.menu-btn-hint, .hint, .profile-entry small) {
+  color: var(--glass-muted);
+}
+html[data-interface-style="glass"] #app .style-switch {
+  background: #ccedff0d;
+  border-color: #d7efff33;
+  box-shadow: inset 0 1px 2px #0003;
+}
+html[data-interface-style="glass"] #app .style-switch .chosen {
+  background: #dfedf4;
+  color: #233d50;
+}
+html[data-interface-style="glass"] #app .btn {
+  border-radius: 999px;
+  border-color: #dbf1ff30;
+  color: #dce9f1;
+  background: #e0f3ff0b;
+  box-shadow: inset 0 1px 0 #ffffff17;
+  font-weight: 500;
+  transform: none;
+}
+html[data-interface-style="glass"] #app .btn:hover:not(:disabled) {
+  background: #dbf1ff1a;
+  box-shadow: inset 0 1px 0 #ffffff35;
+  border-color: #dbf1ff55;
+  transform: none;
+}
+html[data-interface-style="glass"] #app .btn.primary {
+  background: #d7eaf3;
+  color: #193545;
+  border-color: #effaff;
+  box-shadow:
+    inset 0 1px 0 #fff,
+    0 3px 12px #0002;
+}
+html[data-interface-style="glass"] #app .btn.primary:hover:not(:disabled) {
+  background: #eff9ff;
+}
+html[data-interface-style="glass"] #app .btn.danger {
+  background: #f582970d;
+  color: #ffb4c1;
+  border-color: #f5829733;
+}
+html[data-interface-style="glass"] #app :is(.input, .area, select.input) {
+  color: #edf4fa;
+  background-color: rgba(9, 23, 36, 0.44);
+  border-color: #d7efff29;
+  box-shadow: inset 0 1px 4px #00000013;
+}
+html[data-interface-style="glass"] #app :is(.input, .area):focus {
+  border-color: #bce9ff99;
+  box-shadow: 0 0 0 3px #bce9ff12;
+  outline: none;
+}
+html[data-interface-style="glass"] #app :is(.input, .area)::placeholder {
+  color: #a5baca;
+}
+html[data-interface-style="glass"] #app select option {
+  background: #243748;
+  color: #edf4fa;
+}
+html[data-interface-style="glass"]
+  #app
+  :is(.shot-table, .video-row, .cfg-model-slots, .log, .stat, .stage-item, .role-board .role, .cfg-profile-row) {
+  background: #13283844;
+  border-color: #d7efff22;
+  box-shadow: none;
+}
+html[data-interface-style="glass"] #app :is(.shot-row, .shot-table-head) {
+  background: transparent;
+  border-color: #d7efff18;
+}
+html[data-interface-style="glass"] #app .badge {
+  box-shadow: none !important;
+  animation: none;
+}
+html[data-interface-style="glass"] #app .badge[data-status="error"] {
+  color: #ffbdc9;
+  background: #d84d691a;
+  border: 1px solid #d84d6940;
+}
+html[data-interface-style="glass"] #app .drill-dot {
+  background: #b2e4dc;
+  box-shadow: none;
+}
+html[data-interface-style="glass"] #app .portfolio-preview {
+  background: #13283866;
+}
+html[data-interface-style="glass"] #app .profile-intro {
+  position: relative;
+  overflow: hidden;
+}
+/* Curved specular band simulates the refraction at a polished glass edge. */
+html[data-interface-style="glass"] #app .profile-intro::before {
+  content: "";
+  position: absolute;
+  pointer-events: none;
+  width: 65%;
+  height: 220%;
+  top: -145%;
+  right: -8%;
+  border: 1px solid #e3f7ff30;
+  border-radius: 50%;
+  box-shadow:
+    0 4px 12px #e3f7ff0d,
+    inset 0 -5px 20px #e3f7ff0a;
+  transform: rotate(-18deg);
+}
+html[data-interface-style="glass"] :focus-visible {
+  outline: 2px solid #bce9ff;
+  outline-offset: 3px;
+}
+@keyframes glass-drift {
+  from {
+    transform: translate(-2%, -1%) scale(1);
+  }
+  to {
+    transform: translate(3%, 2%) scale(1.05);
+  }
+}
+@supports not (backdrop-filter: blur(1px)) {
+  html[data-interface-style="glass"] #app :is(.sidebar, .card, .topbar) {
+    background: #203344;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  html[data-interface-style="glass"] .app-shell::before {
+    animation: none;
+    will-change: auto;
+  }
+  html[data-interface-style="glass"] #app * {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
+@media (max-width: 960px) {
+  html[data-interface-style="glass"] #app .sidebar {
+    padding-top: 16px;
+  }
+  html[data-interface-style="glass"] #app .brand {
+    margin-bottom: 12px;
+  }
+  html[data-interface-style="glass"] #app .topbar {
+    padding: 16px;
+    border-radius: 18px;
+  }
+  html[data-interface-style="glass"] #app .topbar .actions {
+    justify-content: flex-start;
+  }
+  html[data-interface-style="glass"] #app .card {
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+  }
+}
+
+.glass-filter-defs {
+  position: absolute;
+  pointer-events: none;
+  overflow: hidden;
+}
+/* SVG displacement bends the backdrop itself; unsupported browsers keep the blur above. */
+@supports (backdrop-filter: url("#comic-glass-refraction")) {
+  html[data-interface-style="glass"] #app .topbar {
+    backdrop-filter: blur(20px) saturate(140%) url("#comic-glass-refraction");
+  }
+}
+html[data-interface-style="glass"] #app :is(.card, .topbar, .side-tab-btn, .big-menu-btn, .profile-entry) {
+  background-image: radial-gradient(ellipse at var(--light-x, 30%) var(--light-y, 0%), #e1f4ff0e, transparent 65%);
+}
+html[data-interface-style="glass"] #app .stat strong {
+  color: #edf4fa;
+  text-shadow: none;
+  filter: none;
+  font-weight: 550;
+}
+html[data-interface-style="glass"] #app .stat label {
+  color: #b4c5d4;
+}
+html[data-interface-style="glass"] #app .card h3 {
+  font-weight: 600;
+  letter-spacing: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  html[data-interface-style="glass"] #app :is(.card, .topbar, .side-tab-btn, .big-menu-btn, .profile-entry) {
+    background-image: none;
+  }
+}
+
+html[data-interface-style="glass"] #app .sidebar {
+  padding-left: 16px;
+  padding-right: 16px;
+}
+html[data-interface-style="glass"] #app .brand-tag {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+/* Settings panels need content insets as well as the glass border. Default skin is untouched. */
+html[data-interface-style="glass"] #app .settings-view .card {
+  padding: 28px;
+  min-width: 0;
+}
+html[data-interface-style="glass"] #app .settings-view .cfg-block {
+  box-sizing: border-box;
+  min-width: 0;
+  margin-top: 24px;
+  padding: 24px;
+  display: grid;
+  gap: 18px;
+}
+html[data-interface-style="glass"]
+  #app
+  .settings-view
+  .cfg-block
+  > :is(h4, p, .field, .cfg-model-slots, .cfg-video-supported-modes) {
+  margin: 0;
+  min-width: 0;
+}
+html[data-interface-style="glass"] #app .settings-view .cfg-block h4 {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.5;
+  letter-spacing: 0;
+}
+html[data-interface-style="glass"] #app .settings-view :is(.hint, .field, .opt) {
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+html[data-interface-style="glass"] #app .settings-view .field {
+  gap: 8px;
+  min-width: 0;
+}
+html[data-interface-style="glass"] #app .settings-view .cfg-model-slots {
+  padding: 18px;
+  border: 1px solid #d7efff18;
+  border-radius: 14px;
+}
+html[data-interface-style="glass"] #app .settings-view .cfg-model-slots h5 {
+  margin: 0 0 10px;
+  color: #c1ddea;
+  font-size: 13px;
+}
+html[data-interface-style="glass"] #app .settings-view .cfg-model-slots > .hint {
+  margin: 0 0 14px;
+}
+html[data-interface-style="glass"] #app .settings-view :is(.actions, .opt, .cfg-profile-row) {
+  flex-wrap: wrap;
+}
+html[data-interface-style="glass"] #app .settings-view .cfg-profile-row {
+  padding: 12px;
+  gap: 10px;
+}
+html[data-interface-style="glass"] #app .settings-view .cfg-profile-row span {
+  flex-basis: 180px;
+}
+html[data-interface-style="glass"] #app .settings-view a {
+  color: #b5dfef;
+  text-underline-offset: 3px;
+}
+@media (max-width: 640px) {
+  html[data-interface-style="glass"] #app .settings-view .card {
+    padding: 20px;
+  }
+  html[data-interface-style="glass"] #app .settings-view .cfg-block {
+    padding: 18px;
+    gap: 16px;
+  }
+  html[data-interface-style="glass"] #app .settings-view .cfg-model-slots {
+    padding: 14px;
+  }
+}

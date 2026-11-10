@@ -1,12 +1,10 @@
-import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { promisify } from "node:util";
 import { Agent, fetch as undiciFetch } from "undici";
+import { dashScopeUrl, isDashScopeEndpoint, providerErrorMessage, redactProviderText } from "./dashscopeCompat.js";
 import { dataDir, getDb } from "../db.js";
 
 const undiciAgent = new Agent({ connectTimeout: 60_000, headersTimeout: 600_000 });
-const execFileAsync = promisify(execFile);
 type UndiciResponse = Awaited<ReturnType<typeof undiciFetch>>;
 import type { ArkVideoRatio, VideoProviderConfig } from "../config.js";
 import {
@@ -77,11 +75,8 @@ function resolvePostUrl(baseUrl: string): string {
 }
 
 export function isDashScopeVideoProvider(cfg: VideoProviderConfig): boolean {
-  const b = (cfg.baseUrl || "").toLowerCase();
-  const m = (cfg.model || "").toLowerCase();
-  return (
-    b.includes("dashscope.aliyuncs.com") || b.includes("dashscope") || m.startsWith("wanx") || m.startsWith("wan2")
-  );
+  // Model names alone must not redirect third-party gateways to Aliyun.
+  return isDashScopeEndpoint(cfg.baseUrl);
 }
 
 async function resolveLocalImageBuffer(url: string): Promise<{ buf: Buffer; filename: string; mime: string } | null> {
@@ -163,7 +158,7 @@ async function uploadDashScopeOss(
   const apiKey = cfg.apiKey.trim();
   // 1. Try DashScope native upload policy HTTP API
   try {
-    const certUrl = `https://dashscope.aliyuncs.com/api/v1/uploads?action=getPolicy&model=${encodeURIComponent(model)}`;
+    const certUrl = `${dashScopeUrl(cfg.baseUrl, "/api/v1/uploads")}?action=getPolicy&model=${encodeURIComponent(model)}`;
     const certRes = await undiciFetch(certUrl, {
       method: "GET",
       dispatcher: undiciAgent,
@@ -185,7 +180,11 @@ async function uploadDashScopeOss(
         form.append("x-oss-forbid-overwrite", cert.x_oss_forbid_overwrite);
         form.append("success_action_status", "200");
         form.append("x-oss-content-type", fileInfo.mime || "image/png");
-        form.append("file", new Blob([new Uint8Array(fileInfo.buf)], { type: fileInfo.mime || "image/png" }), fileInfo.filename);
+        form.append(
+          "file",
+          new Blob([new Uint8Array(fileInfo.buf)], { type: fileInfo.mime || "image/png" }),
+          fileInfo.filename,
+        );
 
         const upRes = await fetch(cert.upload_host, {
           method: "POST",
@@ -207,33 +206,9 @@ async function uploadDashScopeOss(
       logger.warn("dashscope get upload certificate failed", { status: certRes.status });
     }
   } catch (e) {
-    logger.warn("dashscope native oss upload error", { error: e instanceof Error ? e.message : String(e) });
-  }
-
-  // 2. Fallback to Python dashscope SDK if available
-  try {
-    const tmpDir = path.join(dataDir, "tmp");
-    if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
-    const tmpFile = path.join(tmpDir, `ds_upload_${Date.now()}_${fileInfo.filename}`);
-    fs.writeFileSync(tmpFile, fileInfo.buf);
-    try {
-      const pyScript =
-        "import sys\nfrom dashscope.utils.oss_utils import check_and_upload_local\nis_up, url, cert = check_and_upload_local(sys.argv[1], sys.argv[2], sys.argv[3])\nprint(url)\n";
-      const { stdout } = await execFileAsync("python", ["-c", pyScript, model, tmpFile, apiKey]);
-      const ossUrl = stdout.trim();
-      if (ossUrl.startsWith("oss://")) {
-        logger.info("dashscope reference image uploaded to oss via python", { ossUrl });
-        return ossUrl;
-      }
-    } finally {
-      try {
-        fs.unlinkSync(tmpFile);
-      } catch {
-        /* ignore */
-      }
-    }
-  } catch (pyErr) {
-    logger.warn("dashscope python oss upload error", { error: pyErr instanceof Error ? pyErr.message : String(pyErr) });
+    logger.warn("dashscope native oss upload error", {
+      error: redactProviderText(e instanceof Error ? e.message : String(e), apiKey),
+    });
   }
 
   throw new Error("无法上传本地参考图至通义万相临时 OSS，请检查网络或配置图床 / MY_APP_PUBLIC_URL。");
@@ -280,10 +255,16 @@ async function createDashScopeVideoTask(
     runMode?: string;
   },
 ): Promise<{ id: string; modelApiCall: ModelApiCallSnapshot }> {
-  const endpoint = "https://dashscope.aliyuncs.com/api/v1/services/aigc/video-generation/video-synthesis";
+  const endpoint = dashScopeUrl(cfg.baseUrl, "/api/v1/services/aigc/video-generation/video-synthesis");
   const apiKey = cfg.apiKey.trim();
 
   const runMode = (input.runMode ?? "").trim();
+  if (["multi_ref", "omni"].includes(runMode)) {
+    throw new Error(
+      "当前万相适配支持纯文本、首帧及首尾帧。多图/全能参考需要该模型对应的专用协议，不能静默丢弃参考素材。",
+    );
+  }
+
   const rawImage = input.imageUrl || (input.imageUrls && input.imageUrls[0]);
   let imgUrl: string | undefined;
   let lastFrameUrl: string | undefined;
@@ -306,28 +287,13 @@ async function createDashScopeVideoTask(
     headers["X-DashScope-OssResourceResolve"] = "enable";
   }
 
-  function normalizeDashScopeVideoModel(mRaw: string | undefined, isTextOnly: boolean): string {
-    const m = (mRaw || "").trim().toLowerCase();
-    if (isTextOnly) {
-      if (m.includes("plus")) return "wanx2.1-t2v-plus";
-      return "wanx2.1-t2v-turbo";
-    }
-    if (!m || m.startsWith("wan2.7") || m.includes("wan2.7")) {
-      return "wanx2.1-i2v-turbo";
-    }
-    if (m.startsWith("wan2.1") || m.startsWith("wanx2.1")) {
-      if (m.includes("plus")) return "wanx2.1-i2v-plus";
-      return "wanx2.1-i2v-turbo";
-    }
-    if (m.includes("plus")) return "wanx2.1-i2v-plus";
-    if (m.includes("wan")) return "wanx2.1-i2v-turbo";
-    return m || "wanx2.1-i2v-turbo";
-  }
-  const model = normalizeDashScopeVideoModel(cfg.model, runMode === "text_only");
+  const model = cfg.model.trim();
 
   function clampDashScopeDuration(durationSeconds?: number): number {
     const d = Math.round(Number(durationSeconds || 5));
-    // 阿里百炼 Wanx 2.1 官方参数 parameters.duration 默认为 5 秒（若模型支持 10 秒则映射为 10）
+    if (!Number.isFinite(d) || d < 1 || d > 15) throw new Error("万相视频时长必须是 1～15 秒；可用时长以具体模型为准");
+    if (!/^wanx?2\.1/i.test(model)) return d;
+    // Legacy 2.1 supports fixed durations; newer models receive the requested duration.
     if (d >= 8) return 10;
     return 5;
   }
@@ -342,6 +308,9 @@ async function createDashScopeVideoTask(
     },
     parameters: {
       duration,
+      ...(runMode === "text_only" || !imgUrl
+        ? { size: input.aspectRatio === "9:16" ? "720*1280" : input.aspectRatio === "1:1" ? "960*960" : "1280*720" }
+        : {}),
     },
   };
 
@@ -364,7 +333,7 @@ async function createDashScopeVideoTask(
 
   const taskId = j?.output?.task_id || j?.task_id || j?.id;
   if (!res.ok || !taskId) {
-    const errorMsg = j?.message || j?.code || text.slice(0, 500) || `HTTP ${res.status}`;
+    const errorMsg = providerErrorMessage(text, apiKey) || `HTTP ${res.status}`;
     const snap: ModelApiCallSnapshot = {
       capturedAt: new Date().toISOString(),
       taskKind: "video",
@@ -393,7 +362,7 @@ async function createDashScopeVideoTask(
 }
 
 async function pollDashScopeVideoTask(cfg: VideoProviderConfig, taskId: string): Promise<string | null> {
-  const url = `https://dashscope.aliyuncs.com/api/v1/tasks/${encodeURIComponent(taskId)}`;
+  const url = dashScopeUrl(cfg.baseUrl, `/api/v1/tasks/${encodeURIComponent(taskId)}`);
   const headers = {
     Authorization: `Bearer ${cfg.apiKey.trim()}`,
   };
@@ -407,6 +376,9 @@ async function pollDashScopeVideoTask(cfg: VideoProviderConfig, taskId: string):
         dispatcher: undiciAgent,
         headers,
       });
+      if (!res.ok && [400, 401, 403, 404].includes(res.status)) {
+        throw new Error(`视频生成任务失败: HTTP ${res.status} ${providerErrorMessage(await res.text(), cfg.apiKey)}`);
+      }
       if (res.ok) {
         const j = (await res.json()) as any;
         const taskStatus = String(j?.output?.task_status || "").toUpperCase();
@@ -418,7 +390,7 @@ async function pollDashScopeVideoTask(cfg: VideoProviderConfig, taskId: string):
           }
         }
         if (taskStatus === "FAILED" || taskStatus === "CANCELED") {
-          const msg = j?.output?.message || j?.message || "Task failed";
+          const msg = redactProviderText(j?.output?.message || j?.message || "Task failed", cfg.apiKey);
           logger.warn("dashscope video task failed", { taskId, taskStatus, msg });
           throw new Error(`视频生成任务失败: [${taskStatus}] ${msg}`);
         }

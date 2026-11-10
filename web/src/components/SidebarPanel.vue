@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import AppIcon from "./AppIcon.vue";
+import { useUiStore } from "../stores/ui";
+const ui = useUiStore();
 import type { MenuItem, MenuKey, ProjectSummary, SideTabItem, SideTabKey } from "../types";
 
 const props = defineProps<{
@@ -29,42 +32,30 @@ const emit = defineEmits<{
 const projectDrilldown = computed(
   () => props.activeSideTab === "projects" && props.selected != null && props.showingCreateProject !== true,
 );
-
-function getMenuIcon(key: MenuKey): string {
-  switch (key) {
-    case "overview":
-      return "📊";
-    case "source":
-      return "📄";
-    case "pipeline":
-      return "⚡";
-    case "script":
-      return "✍️";
-    case "storyboard":
-      return "🎬";
-    case "video":
-      return "🎥";
-    case "jobs":
-      return "⏱️";
-    case "assets":
-      return "🎨";
-    case "assetLibrary":
-      return "📦";
-    case "timeline":
-      return "🎞️";
-    default:
-      return "🔹";
-  }
-}
 </script>
 
 <template>
   <aside class="sidebar">
     <!-- Brand Header -->
-    <div v-if="!projectDrilldown" class="brand">
+    <div class="brand">
       <div class="brand-title-wrap">
-        <span class="brand-icon">⚡</span>
+        <AppIcon name="engine" :size="26" class="brand-icon" />
         <h1>漫剧引擎</h1>
+        <div class="style-switch" role="group" aria-label="界面风格">
+          <button
+            v-for="option in [
+              { key: 'default', label: '默认' },
+              { key: 'glass', label: '新版' },
+            ] as const"
+            :key="option.key"
+            type="button"
+            :aria-pressed="ui.interfaceStyle === option.key"
+            :class="{ chosen: ui.interfaceStyle === option.key }"
+            @click="ui.interfaceStyle = option.key"
+          >
+            {{ option.label }}
+          </button>
+        </div>
       </div>
       <span class="brand-tag">AI COMIC &amp; FILM STUDIO</span>
     </div>
@@ -79,7 +70,7 @@ function getMenuIcon(key: MenuKey): string {
         :class="{ active: activeSideTab === t.key }"
         @click="emit('select-side-tab', t.key)"
       >
-        <span class="side-tab-icon">{{ t.key === "projects" ? "📁" : "⚙️" }}</span>
+        <AppIcon :name="t.key" class="side-tab-icon" />
         <span class="side-tab-label">{{ t.label }}</span>
       </button>
     </nav>
@@ -113,15 +104,10 @@ function getMenuIcon(key: MenuKey): string {
       </div>
       <p v-if="projectsLoadError" class="sidebar-load-err">{{ projectsLoadError }}</p>
       <ul v-if="projects.length" class="project-list">
-        <li
-          v-for="p in projects"
-          :key="p.id"
-          class="project-item-btn"
-          :class="{ active: p.id === selectedId }"
-          @click="emit('select-project', p.id)"
-        >
-          <span class="project-icon">🎬</span>
-          <span class="name">{{ p.name }}</span>
+        <li v-for="p in projects" :key="p.id" class="project-item-btn" :class="{ active: p.id === selectedId }">
+          <button type="button" class="project-select" @click="emit('select-project', p.id)">
+            <AppIcon name="storyboard" class="project-icon" /><span class="name">{{ p.name }}</span>
+          </button>
           <span class="badge" :data-status="p.pipelineStatus">{{ p.pipelineStatus }}</span>
           <button
             type="button"
@@ -149,12 +135,22 @@ function getMenuIcon(key: MenuKey): string {
         @click="emit('select-project-menu', m.key)"
       >
         <span class="menu-btn-main">
-          <span class="menu-btn-icon">{{ getMenuIcon(m.key) }}</span>
+          <AppIcon :name="m.key" class="menu-btn-icon" />
           <span class="menu-btn-title">{{ m.label }}</span>
         </span>
         <span v-if="m.hint" class="menu-btn-hint">{{ m.hint.split("（")[0] }}</span>
       </button>
     </nav>
+    <button
+      type="button"
+      class="profile-entry"
+      :class="{ active: activeSideTab === 'profile' }"
+      :aria-current="activeSideTab === 'profile' ? 'page' : undefined"
+      @click="emit('select-side-tab', 'profile')"
+    >
+      <AppIcon name="user" :size="22" /><span><strong>个人中心</strong><small>我的项目与视频作品</small></span
+      ><AppIcon name="arrow" :size="16" />
+    </button>
   </aside>
 </template>
 
@@ -167,8 +163,8 @@ function getMenuIcon(key: MenuKey): string {
   height: 100%;
   display: flex;
   flex-direction: column;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: hidden;
+  min-height: 0;
   box-sizing: border-box;
   min-width: 0;
 }
@@ -390,7 +386,7 @@ function getMenuIcon(key: MenuKey): string {
   background: rgba(13, 20, 36, 0.7);
   cursor: pointer;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 10px;
   color: #e2eaf4;
@@ -546,7 +542,8 @@ function getMenuIcon(key: MenuKey): string {
 @media (max-width: 960px) {
   .sidebar {
     height: auto;
-    overflow: visible;
+    max-height: 440px;
+    overflow: hidden;
     border-right: none;
     border-bottom: 1px solid rgba(56, 189, 248, 0.15);
   }
@@ -561,6 +558,151 @@ function getMenuIcon(key: MenuKey): string {
 @media (max-width: 640px) {
   .project-submenu {
     grid-template-columns: 1fr;
+  }
+}
+/* The middle region owns scrolling; the footer never shrinks out of view. */
+.brand h1 {
+  font-size: 21px;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+.brand-title-wrap {
+  gap: 7px;
+}
+.brand-icon {
+  filter: none;
+}
+.style-switch {
+  display: flex;
+  flex-shrink: 0;
+  padding: 3px;
+  margin-left: auto;
+  border: 1px solid #33465c;
+  background: #111b2b;
+  border-radius: 999px;
+}
+.style-switch button {
+  border: 0;
+  background: transparent;
+  color: #a9bacd;
+  padding: 4px 7px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  border-radius: 999px;
+}
+.style-switch .chosen {
+  background: #d8edf6;
+  color: #13283a;
+  box-shadow: 0 1px 5px #0003;
+}
+.project-box {
+  overflow: hidden;
+  padding: 10px 6px;
+  border: 1px solid #29425980;
+  border-radius: 14px;
+  background: #08111a60;
+}
+.project-box-header {
+  flex: 0 0 auto;
+}
+.project-list {
+  flex: 1 1 0;
+  min-height: 0;
+  align-content: start;
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+  padding: 2px;
+}
+.project-item-btn {
+  padding: 10px 8px;
+  gap: 5px;
+}
+.project-select {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  min-height: 34px;
+  padding: 0;
+  color: inherit;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+.project-select .name {
+  min-width: 0;
+}
+.project-submenu {
+  min-height: 0;
+  flex: 1 1 0;
+  overscroll-behavior: contain;
+}
+.big-menu-btn {
+  flex-shrink: 0;
+}
+.profile-entry {
+  margin-top: auto;
+  flex: 0 0 auto;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 12px;
+  border: 1px solid #294259;
+  border-radius: 14px;
+  background: #0d1424;
+  color: #dae8f5;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.project-box + .profile-entry,
+.project-submenu + .profile-entry {
+  margin-top: 12px;
+}
+.profile-entry span {
+  display: grid;
+  gap: 3px;
+  flex: 1;
+}
+.profile-entry strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+.profile-entry small {
+  color: #99adbf;
+  font-size: 11px;
+}
+.profile-entry.active {
+  border-color: #7dd3fc;
+  background: #16384b;
+}
+button:focus-visible {
+  outline: 2px solid #7dd3fc;
+  outline-offset: 2px;
+}
+@media (max-width: 960px) {
+  .project-box {
+    flex: 1 1 auto;
+    min-height: 80px;
+  }
+  .project-list {
+    flex: 1 1 auto;
+    max-height: 180px;
+  }
+  .project-submenu {
+    display: grid;
+    max-height: 170px;
+    flex: 1 1 auto;
+  }
+  .menu-section-label {
+    grid-column: 1 / -1;
+  }
+  .profile-entry {
+    margin-top: 12px;
+    padding: 10px 12px;
   }
 }
 </style>
